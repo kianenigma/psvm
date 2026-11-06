@@ -119,6 +119,10 @@ pub struct SdkRelease {
     /// File the crate versions were read from: `Plan.toml` or `Cargo.lock`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub source: Option<String>,
+    /// Commits on the line's branch since the previous release point; unknown for the first point, or when either
+    /// point is not in the branch history.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub commits: Option<usize>,
 }
 
 /// A release line, e.g. `stable2606`, which is also the name of its branch.
@@ -157,6 +161,37 @@ struct SdkReleaseMatch<'a> {
 struct RuntimesReleaseOut<'a> {
     #[serde(flatten)]
     release: &'a RuntimesRelease,
+    #[serde(rename = "sdkRelease", skip_serializing_if = "Option::is_none")]
+    sdk_release: Option<SdkReleaseMatch<'a>>,
+}
+
+/// An open runtimes PR that releases a new version when merged, with what its head would ship.
+#[derive(Debug, Clone)]
+struct PendingRelease {
+    number: u64,
+    title: String,
+    url: String,
+    draft: bool,
+    created_at: String,
+    head_sha: String,
+    version: String,
+    specs: Vec<RuntimeSpec>,
+    locks: BTreeMap<String, Vec<Locked>>,
+}
+
+/// A pending release as written to `pending-releases.json`.
+#[derive(Debug, Serialize)]
+struct PendingReleaseOut<'a> {
+    number: u64,
+    title: &'a str,
+    url: &'a str,
+    draft: bool,
+    #[serde(rename = "createdAt")]
+    created_at: &'a str,
+    #[serde(rename = "headSha")]
+    head_sha: &'a str,
+    version: &'a str,
+    specs: &'a [RuntimeSpec],
     #[serde(rename = "sdkRelease", skip_serializing_if = "Option::is_none")]
     sdk_release: Option<SdkReleaseMatch<'a>>,
 }
@@ -237,6 +272,7 @@ pub async fn run(options: IndexOptions) -> Result<(), Error> {
     log::info!("indexed {} crates", crates.len());
 
     let crate_paths = crate_paths(&gh, &cache, &crates).await?;
+    let pending = pending_releases(&gh, &cache).await?;
     let live = if options.live {
         live_specs(&gh, &runtimes).await
     } else {
@@ -250,6 +286,7 @@ pub async fn run(options: IndexOptions) -> Result<(), Error> {
         &runtimes,
         &crate_paths,
         &live,
+        &pending,
     )
 }
 
@@ -278,6 +315,7 @@ async fn sdk_lines(gh: &GitHub) -> Result<Vec<SdkLine>, Error> {
             aliases: aliases.get(tag.sha.as_str()).cloned().unwrap_or_default(),
             publication: None,
             source: None,
+            commits: None,
         });
     }
 
@@ -304,6 +342,7 @@ async fn line_with_publications(
         .to_string();
     let commits = gh.commits_since(SDK_REPO, &name, &since).await?;
     let has_branch = commits.is_some();
+    let history: Vec<String> = commits.iter().flatten().map(|c| c.sha.clone()).collect();
 
     for commit in commits.into_iter().flatten() {
         let first_line = commit.message.lines().next().unwrap_or_default();
@@ -325,10 +364,12 @@ async fn line_with_publications(
             aliases: vec![],
             publication: Some(first_line.to_string()),
             source: None,
+            commits: None,
         });
     }
 
     releases.sort_by_key(release_order_key);
+    count_commits_between(&mut releases, &history);
     log::info!("line {}: {} release points", name, releases.len());
     Ok(SdkLine {
         name,
@@ -339,6 +380,19 @@ async fn line_with_publications(
 
 /// Releases of a line are ordered by commit date; ties (several tags on one commit) by patch,
 /// with rcs before the final release.
+/// Sets `commits` of each release point to the commits since the previous one, from their positions in the branch
+/// history (newest first, as the commits API lists it).
+fn count_commits_between(releases: &mut [SdkRelease], history: &[String]) {
+    let position = |sha: &str| history.iter().position(|h| h == sha);
+    for i in 1..releases.len() {
+        let (prev, cur) = (position(&releases[i - 1].sha), position(&releases[i].sha));
+        releases[i].commits = match (prev, cur) {
+            (Some(prev), Some(cur)) if prev >= cur => Some(prev - cur),
+            _ => None,
+        };
+    }
+}
+
 fn release_order_key(release: &SdkRelease) -> (String, u32, bool, Option<u32>) {
     let class = parse::classify_sdk_tag(&release.name);
     (
@@ -494,6 +548,64 @@ async fn fetch_runtimes_release(gh: &GitHub, sha: &str) -> Result<CachedRuntimes
     Ok(CachedRuntimes { locks, specs })
 }
 
+/// Open runtimes PRs among the newest `PENDING_PRS` that release a version when merged (see
+/// `parse::parse_release_changelog_patch`), with the `Cargo.lock` and spec versions of their head.
+async fn pending_releases(gh: &GitHub, cache: &Cache) -> Result<Vec<PendingRelease>, Error> {
+    const PENDING_PRS: usize = 10;
+    let path = format!(
+        "/repos/{}/pulls?state=open&sort=created&direction=desc&per_page={}",
+        RUNTIMES_REPO, PENDING_PRS
+    );
+    let prs = gh
+        .rest(&path)
+        .await?
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    let mut pending = vec![];
+    for pr in prs {
+        let number = pr["number"].as_u64().unwrap_or_default();
+        let files_path = format!(
+            "/repos/{}/pulls/{}/files?per_page=100",
+            RUNTIMES_REPO, number
+        );
+        let files = gh
+            .rest(&files_path)
+            .await?
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default();
+        let Some(version) = files
+            .iter()
+            .filter(|f| f["filename"] == "CHANGELOG.md")
+            .find_map(|f| parse::parse_release_changelog_patch(f["patch"].as_str()?))
+        else {
+            continue;
+        };
+        let head_sha = pr["head"]["sha"].as_str().unwrap_or_default().to_string();
+        let data = match cache.get::<CachedRuntimes>("runtimes", &head_sha) {
+            Some(data) => data,
+            None => {
+                let data = fetch_runtimes_release(gh, &head_sha).await?;
+                cache.put("runtimes", &head_sha, &data)?;
+                data
+            }
+        };
+        log::info!("pending runtimes release {} in #{}", version, number);
+        let text = |key: &str| pr[key].as_str().unwrap_or_default().to_string();
+        pending.push(PendingRelease {
+            number,
+            title: text("title"),
+            url: text("html_url"),
+            draft: pr["draft"].as_bool().unwrap_or_default(),
+            created_at: text("created_at"),
+            head_sha,
+            version,
+            specs: data.specs,
+            locks: data.locks,
+        });
+    }
+    Ok(pending)
+}
+
 /// Maps crate directories of polkadot-sdk `master` to crate names, for the crates in `crates`.
 async fn crate_paths(
     gh: &GitHub,
@@ -634,6 +746,7 @@ fn write_output(
     runtimes: &[(RuntimesRelease, BTreeMap<String, Vec<Locked>>)],
     crate_paths: &BTreeMap<String, String>,
     live: &[LiveSpec],
+    pending: &[PendingRelease],
 ) -> Result<(), Error> {
     let mut shards: BTreeMap<&str, CrateShard> = BTreeMap::new();
     let mut origin_ranks: HashMap<(&str, &str), (bool, bool, &str)> = HashMap::new();
@@ -694,6 +807,20 @@ fn write_output(
             sdk_release: matching_sdk_release(locks, lines, mappings, &sdk_crates),
         })
         .collect();
+    let pending_out: Vec<PendingReleaseOut> = pending
+        .iter()
+        .map(|p| PendingReleaseOut {
+            number: p.number,
+            title: &p.title,
+            url: &p.url,
+            draft: p.draft,
+            created_at: &p.created_at,
+            head_sha: &p.head_sha,
+            version: &p.version,
+            specs: &p.specs,
+            sdk_release: matching_sdk_release(&p.locks, lines, mappings, &sdk_crates),
+        })
+        .collect();
     let generated_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
@@ -713,6 +840,7 @@ fn write_output(
     )?;
     write("crate-paths.json", serde_json::to_value(crate_paths)?)?;
     write("live-specs.json", serde_json::to_value(live)?)?;
+    write("pending-releases.json", serde_json::to_value(&pending_out)?)?;
     write(
         "meta.json",
         serde_json::json!({
@@ -746,7 +874,24 @@ mod tests {
             aliases: vec![],
             publication: None,
             source: source.map(String::from),
+            commits: None,
         }
+    }
+
+    #[test]
+    fn counts_commits_between_release_points() {
+        let mut releases = [
+            release("a", "", None),
+            release("b", "", None),
+            release("c", "", None),
+            release("d", "", None),
+        ];
+        releases[2].sha = "b".into(); // Same commit as the previous point.
+        releases[3].sha = "x".into(); // Not in the history.
+        let history: Vec<String> = ["b", "y", "z", "a"].map(String::from).to_vec();
+        count_commits_between(&mut releases, &history);
+        let counts: Vec<_> = releases.iter().map(|r| r.commits).collect();
+        assert_eq!(counts, vec![None, Some(3), Some(0), None]);
     }
 
     #[test]
@@ -824,6 +969,7 @@ mod tests {
                 "[stable2606] Post crates release activities for stable2606-4".into(),
             ),
             source: Some("Plan.toml".into()),
+            commits: None,
         };
         let lines = vec![SdkLine {
             name: "stable2606".into(),
@@ -859,7 +1005,16 @@ mod tests {
             ]),
         )];
 
-        write_output(&out, &lines, &mappings, &runtimes, &BTreeMap::new(), &[]).unwrap();
+        write_output(
+            &out,
+            &lines,
+            &mappings,
+            &runtimes,
+            &BTreeMap::new(),
+            &[],
+            &[],
+        )
+        .unwrap();
 
         let shard: serde_json::Value = serde_json::from_slice(
             &std::fs::read(out.join("crates/staging-xcm-executor.json")).unwrap(),

@@ -174,6 +174,23 @@ pub fn parse_runtime_lock(content: &str) -> BTreeMap<String, Vec<Locked>> {
     out
 }
 
+/// The version a runtimes PR releases, from its `CHANGELOG.md` diff: the fellows release workflow releases when the
+/// first `## [...]` heading is a version instead of `[Unreleased]`, so a release PR turns `-## [Unreleased]` into
+/// `+## [2.5.3] 06.11.2026`.
+pub fn parse_release_changelog_patch(patch: &str) -> Option<String> {
+    let removes_unreleased = patch
+        .lines()
+        .any(|l| l.trim_end().eq_ignore_ascii_case("-## [unreleased]"));
+    if !removes_unreleased {
+        return None;
+    }
+    patch.lines().find_map(|l| {
+        let version = l.strip_prefix("+## [")?.split(']').next()?;
+        (version.split('.').count() == 3 && version.split('.').all(|p| p.parse::<u32>().is_ok()))
+            .then(|| version.to_string())
+    })
+}
+
 /// `spec_name` and `spec_version` of a runtime, read from its `lib.rs`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSpec {
@@ -262,6 +279,21 @@ pub fn is_valid_crate_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_release_changelog_patches() {
+        let release =
+            "@@ -4,10 +4,12 @@\n \n-## [Unreleased]\n+## [2.5.3] 06.11.2026\n \n ### Changed\n";
+        assert_eq!(parse_release_changelog_patch(release), Some("2.5.3".into()));
+        // A normal PR adds an entry under `[Unreleased]`.
+        let entry = "@@ -6,6 +6,7 @@\n ## [Unreleased]\n \n ### Changed\n+- Something.\n";
+        assert_eq!(parse_release_changelog_patch(entry), None);
+        // Renaming `[Unreleased]` to something that is not a version is not a release.
+        assert_eq!(
+            parse_release_changelog_patch("-## [Unreleased]\n+## [Next]\n"),
+            None
+        );
+    }
 
     #[test]
     fn validates_crate_names() {

@@ -203,7 +203,7 @@ export async function commitRange(
 }
 
 /** A ref GitHub's compare page accepts that reads well in a URL: the tag name, else the sha. */
-const refOf = (release: SdkRelease) => (release.kind === 'tag' ? release.id : release.sha);
+export const refOf = (release: SdkRelease) => (release.kind === 'tag' ? release.id : release.sha);
 
 /** Counts and lists the newest commits of `line.releases[index]` since the previous release point. */
 export async function releaseChanges(

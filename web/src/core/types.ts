@@ -11,6 +11,8 @@ export interface SdkRelease {
   aliases?: string[];
   publication?: string;
   source?: 'Plan.toml' | 'Cargo.lock';
+  /** Commits on the line's branch since the previous release point, when known. */
+  commits?: number;
 }
 
 export interface SdkLine {
@@ -59,6 +61,20 @@ export interface LiveSpec {
   specName: string;
   specVersion: number;
   releases: string[];
+}
+
+/** An open runtimes PR that releases a version when merged (it renames `[Unreleased]` in CHANGELOG.md). */
+export interface PendingRelease {
+  number: number;
+  title: string;
+  url: string;
+  draft: boolean;
+  createdAt: string;
+  headSha: string;
+  version: string;
+  specs: RuntimeSpec[];
+  /** The polkadot-sdk release the PR's `Cargo.lock` matches best. */
+  sdkRelease?: { id: string; matched: number; total: number };
 }
 
 export interface Meta {

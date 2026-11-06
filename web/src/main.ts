@@ -17,8 +17,16 @@ import {
   type Report,
   type RuntimesRow,
 } from './core/lookup';
-import { type ChainStatus, type RuntimesOverview, type RuntimesSdk, runtimesOverview } from './core/runtimes';
-import type { LiveSpec, Meta, RuntimesRelease, SdkLine, SdkRelease } from './core/types';
+import {
+  type ChainStatus,
+  type PendingReleasePage,
+  pendingReleasePage,
+  type RuntimesOverview,
+  type RuntimesSdk,
+  runtimesOverview,
+  type SdkPoint,
+} from './core/runtimes';
+import type { LiveSpec, Meta, PendingRelease, RuntimesRelease, SdkLine, SdkRelease } from './core/types';
 
 type Merged = Extract<Report, { status: 'merged' }>;
 
@@ -118,10 +126,26 @@ interface RailOptions {
   current?: string;
 }
 
+/** `n commits`, as the label on the track leading into a stop. */
+function edgeLabel(n: number | null, cls: string): string {
+  return n === null ? '' : `<span class="edge ${cls}" title="${n} commit${n === 1 ? '' : 's'} since the previous release">${n}</span>`;
+}
+
 function renderRail(line: SdkLine, { firstIndex, current }: RailOptions = {}): string {
   const tracksChange = firstIndex !== undefined;
+  // Commits since the previous stop, and since the previous final for when release candidates are hidden.
+  let sinceFinal: number | null = 0;
+  let seenFinal = false;
   const stops = line.releases
     .map((r, i) => {
+      const commits = i > 0 && r.commits !== undefined ? r.commits : null;
+      sinceFinal = sinceFinal === null || commits === null ? null : sinceFinal + commits;
+      const finalEdge = !r.rc && seenFinal ? edgeLabel(sinceFinal, 'final') : '';
+      const afterFinal = seenFinal;
+      if (!r.rc) {
+        seenFinal = true;
+        sinceFinal = 0;
+      }
       const inside = firstIndex != null && i >= firstIndex;
       const classes = [
         'stop',
@@ -130,24 +154,29 @@ function renderRail(line: SdkLine, { firstIndex, current }: RailOptions = {}): s
         inside ? 'in' : '',
         i === firstIndex ? 'first' : '',
         r.id === current ? 'current' : '',
+        afterFinal ? 'after-final' : '',
       ]
         .filter(Boolean)
         .join(' ');
       const what = r.kind === 'untagged' ? `${r.name}, crates published without a tag (${short(r.sha)})` : r.name;
       const state = tracksChange ? `: ${inside ? 'contains the change' : 'does not contain the change'}` : '';
       const title = `${what}, ${date(r.date)}${state}`;
-      return `<li class="${classes}"><a href="${esc(releaseHref(r))}" title="${esc(title)}" aria-label="${esc(title)}"${r.id === current ? ' aria-current="page"' : ''}><span class="dot"></span><span class="stop-label">${esc(stopLabel(r, line.name))}</span></a></li>`;
+      return `<li class="${classes}"><a href="${esc(releaseHref(r))}" title="${esc(title)}" aria-label="${esc(title)}"${r.id === current ? ' aria-current="page"' : ''}><span class="dot"></span><span class="stop-label">${esc(stopLabel(r, line.name))}</span></a>${edgeLabel(commits, 'all')}${finalEdge}</li>`;
     })
     .join('');
   return `<ol class="rail">${stops}</ol>`;
 }
 
-const RAIL_LEGEND = `<ul class="legend" aria-label="Legend">
+/** Shows or hides release candidates on every rail (see `toggleRcs`); the label follows the state via CSS. */
+const RC_TOGGLE = `<button type="button" class="secondary rc-toggle" data-rc-toggle><span class="when-shown">Hide</span><span class="when-hidden">Show</span> release candidates</button>`;
+
+const RAIL_LEGEND = `${RC_TOGGLE}<ul class="legend" aria-label="Legend">
   <li><span class="stop"><span class="dot"></span></span>Final release</li>
   <li><span class="stop rc"><span class="dot"></span></span>Release candidate</li>
   <li><span class="stop untagged"><span class="dot"></span></span>Crates published without a git tag</li>
   <li><span class="stop in"><span class="dot"></span></span>Contains the change</li>
   <li><span class="stop in first"><span class="dot"></span></span>First release with the change</li>
+  <li><span class="edge-sample">12</span>Commits between two releases</li>
 </ul>`;
 
 function renderOpenPr(pr: OpenPr, { showTarget = false, showOriginal = false } = {}): string {
@@ -279,7 +308,7 @@ function renderVerdict(row: RuntimesRow, verdict: LockVerdict): string {
 const specVersion = (v: number) => String(v).replace(/\B(?=(\d{3})+(?!\d))/g, '_');
 
 /** The release's spec version, or its range if the runtimes differ; per-runtime list on hover. */
-function renderSpecs(release: RuntimesRelease): string {
+function renderSpecs(release: { specs: RuntimesRelease['specs'] }): string {
   if (!release.specs.length) return '<span class="muted">—</span>';
   const versions = [...new Set(release.specs.map((s) => s.specVersion))].sort((a, b) => a - b);
   const text = versions.length === 1 ? specVersion(versions[0]) : `${specVersion(versions[0])}–${specVersion(versions.at(-1)!)}`;
@@ -349,7 +378,7 @@ function renderOverviewLine({ line, open }: LineOverview): string {
     ? `<div class="pending"><strong>${open.length === 1 ? '1 open backport' : `${open.length} open backports`}</strong> into <code>${esc(line.name)}</code>: no release of this line has ${open.length === 1 ? 'it' : 'them'} yet.<ul class="prs">${open.map((pr) => renderOpenPr(pr, { showOriginal: true })).join('')}</ul></div>`
     : `<p class="line-summary muted">No open backports into <code>${esc(line.name)}</code>.</p>`;
   return `<div class="line">
-    <div class="line-name">${esc(line.name)}${open.length ? ` <span class="badge">${open.length} open</span>` : ''}</div>
+    <div class="line-head"><span class="line-name">${esc(line.name)}</span>${open.length ? `<span class="badge">${open.length} open</span>` : ''}</div>
     <div>
       ${renderRail(line)}
       ${latest ? `<p class="line-summary">Latest: ${releaseLink(latest)} <span class="muted">${date(latest.date)}</span></p>` : ''}
@@ -368,7 +397,8 @@ function renderOverview({ lines, other }: { lines: LineOverview[]; other: OpenPr
       <div class="facts"><span>${lines.length} lines</span><span>${total} open backports</span></div>
     </div>
     <section>
-      <p class="section-note">Backports are merged into a line's branch and ship with its next release. An open backport is missing from every release of its line so far. Click a release to see its details.</p>
+      <p class="section-note">Backports are merged into a line's branch and ship with its next release. An open backport is missing from every release of its line so far. Click a release to see its details. Numbers on the track count the commits between two releases.</p>
+      ${RC_TOGGLE}
       <div class="lines">${lines.map(renderOverviewLine).join('')}</div>
     </section>${otherBlock}`;
 }
@@ -431,6 +461,7 @@ function renderReleasePage(page: ReleasePage): string {
     <section>
       <h2>Line <code>${esc(line.name)}</code></h2>
       <p class="section-note">${position}. ${pageLink('#/releases', 'All release lines')}.</p>
+      ${RC_TOGGLE}
       ${renderRail(line, { current: release.id })}
     </section>
     ${renderChanges(changes)}
@@ -507,6 +538,72 @@ function renderRuntimesPage({ latest, rows, chains, unreleased }: RuntimesOvervi
     </section>`;
 }
 
+// --- Pending fellowship release ----------------------------------------------------------------
+
+function renderSdkPoint(point: SdkPoint | null, match?: { matched: number; total: number }): string {
+  if (!point) return '<span class="muted">unknown</span>';
+  const open = point.openBackports.length;
+  const flag = open
+    ? `<span class="flag warn">⚠ ${open} open backport${open === 1 ? '' : 's'} into <code>${esc(point.line)}</code></span>`
+    : `<span class="flag ok">✓ no open backports into <code>${esc(point.line)}</code></span>`;
+  const newer = point.newer.length
+    ? `${point.newer.length} newer on <code>${esc(point.line)}</code>, latest ${releaseLink(point.newer.at(-1)!)}`
+    : `latest of <code>${esc(point.line)}</code>`;
+  const matched = match ? `, ${match.matched} of ${match.total} crates match` : '';
+  return `${releaseLink(point.release)}<span class="sub">${flag}</span><span class="sub">${newer}${matched}</span>`;
+}
+
+function renderPendingPage(page: PendingReleasePage): string {
+  if (page.status === 'not-found') {
+    return `<p class="status error">#${page.number} is not a pending fellowship release in the index. It may have been merged or closed; see ${pageLink('#/runtimes', 'the fellowship runtimes')}.</p>`;
+  }
+  const { pr, state, previous, before, after, sdkChanges } = page;
+  const stateNote =
+    state === 'open'
+      ? ''
+      : `<p class="status">This PR has been ${state} since the index was built; the next index build drops it from here.</p>`;
+  const moved =
+    before && after
+      ? before.release.id === after.release.id
+        ? 'The polkadot-sdk release does not change.'
+        : before.line === after.line
+          ? `Moves along <code>${esc(after.line)}</code>.`
+          : `Moves from <code>${esc(before.line)}</code> to <code>${esc(after.line)}</code>.`
+      : '';
+  const changes = !sdkChanges
+    ? ''
+    : sdkChanges.total
+      ? `<h2>polkadot-sdk changes</h2><p class="section-note">${sdkChanges.total === 1 ? '1 commit' : `${sdkChanges.total} commits`} from ${releaseLink(before!.release)} to ${releaseLink(after!.release)}.</p>${renderCommits(sdkChanges)}`
+      : '';
+  const backports = after?.openBackports.length
+    ? `<section><h2>Open backports into <code>${esc(after.line)}</code></h2><p class="section-note">Not in ${releaseLink(after.release)} nor any release of its line yet.</p><ul class="prs">${after.openBackports.map((o) => renderOpenPr(o, { showOriginal: true })).join('')}</ul></section>`
+    : '';
+  const rail = after ? `${RC_TOGGLE}${renderRail(after.lineData, { current: after.release.id })}` : '';
+  return `<div class="pr-head">
+      <h2>${link(pr.url, esc(pr.title))}</h2>
+      <div class="facts">
+        <span>Releases <code>${esc(pr.version)}</code></span>
+        <span>#${pr.number}${pr.draft ? ' (draft)' : ''}</span>
+        <span>Opened ${date(pr.createdAt)}</span>
+        <span>Head ${link(`https://github.com/${RUNTIMES_REPO}/commit/${pr.headSha}`, `<code>${short(pr.headSha)}</code>`)}</span>
+        <span>Spec version ${renderSpecs(pr).replace(/<span class="sub">.*<\/span>/, '')}</span>
+      </div>
+    </div>
+    ${stateNote}
+    <section>
+      <h2>polkadot-sdk</h2>
+      <p class="section-note">The polkadot-sdk release whose crate versions match the most crates locked in each <code>Cargo.lock</code>. ${moved}</p>
+      <div class="table-wrap"><table>
+        <tr><th></th><th>Runtimes</th><th>polkadot-sdk</th></tr>
+        <tr><td>Now</td><td>${previous ? runtimesReleaseLink(previous) : '<span class="muted">none</span>'}</td><td>${renderSdkPoint(before, previous?.sdkRelease)}</td></tr>
+        <tr><td>With this PR</td><td><code>${esc(pr.version)}</code></td><td>${renderSdkPoint(after, pr.sdkRelease)}</td></tr>
+      </table></div>
+      ${rail}
+    </section>
+    <section>${changes}</section>
+    ${backports}`;
+}
+
 // --- Page --------------------------------------------------------------------------------------
 
 function renderReport(report: Report): string {
@@ -576,20 +673,31 @@ function renderFooter() {
   footer.innerHTML = `<p>${indexed}${calls} Source: ${link('https://github.com/kianenigma/psvm', 'kianenigma/psvm')}.</p>`;
 }
 
-function route() {
-  const hash = location.hash;
+/** Pages other than the PR trace; the PR field and the "Trace a PR" highlight belong to the trace pages only. */
+const OTHER_PAGES = /^#\/(release|runtimes|pending)/;
+
+function markNav(hash: string) {
   document.querySelectorAll<HTMLAnchorElement>('.nav a').forEach((a) => {
     const href = a.getAttribute('href')!;
     const active =
-      href === '#/releases' ? hash.startsWith('#/release') : href === '#/runtimes' ? hash === href : !/^#\/(release|runtimes)/.test(hash);
+      href === '#/releases' ? hash.startsWith('#/release') : href === '#/' ? !OTHER_PAGES.test(hash) : hash === href;
     a.toggleAttribute('aria-current', active);
   });
+}
+
+function route() {
+  const hash = location.hash;
+  markNav(hash);
   document.body.dataset.page = hash === '' || hash === '#/' ? 'home' : 'other';
-  // The PR field only belongs to the trace pages; the other pages keep just the token panel.
-  form.hidden = /^#\/(release|runtimes)/.test(hash);
+  form.hidden = OTHER_PAGES.test(hash);
   const pr = hash.match(/^#\/pr\/(\d+)/);
   const release = hash.match(/^#\/release\/(.+)$/);
+  const pending = hash.match(/^#\/pending\/(\d+)$/);
   if (pr) run(Number(pr[1]));
+  else if (pending) {
+    const number = Number(pending[1]);
+    void show(`Loading pending release #${number}…`, (http) => pendingReleasePage(http, number), renderPendingPage, `Pending release #${number} · Where is my PR?`);
+  }
   else if (hash === '#/runtimes')
     void show('Loading fellowship runtimes…', (http) => runtimesOverview(http), renderRuntimesPage, 'Fellowship runtimes · Where is my PR?');
   else if (hash === '#/releases')
@@ -618,11 +726,20 @@ form.addEventListener('submit', (e) => {
   else location.hash = hash;
 });
 
+function showTokenState() {
+  document.getElementById('token-state')!.textContent = storageKV.get(TOKEN_KEY) ? 'GitHub token set' : 'Add GitHub token';
+}
 tokenInput.value = storageKV.get(TOKEN_KEY) ?? '';
+showTokenState();
 document.getElementById('token-save')!.addEventListener('click', () => {
   storageKV.set(TOKEN_KEY, tokenInput.value.trim());
   tokenPanel.open = false;
+  showTokenState();
   route();
+});
+// Close the token dropdown on a click elsewhere.
+document.addEventListener('click', (e) => {
+  if (tokenPanel.open && !tokenPanel.contains(e.target as Node)) tokenPanel.open = false;
 });
 
 // Theme switch: `public/theme.js` applies the saved choice before paint; this keeps it and the buttons in sync.
@@ -655,4 +772,42 @@ fetch('data/meta.json')
     renderFooter();
   })
   .catch(() => renderFooter());
+
+// A runtimes PR that releases on merge gets a link in the header (found by the indexer, see `pending-releases.json`).
+fetch('data/pending-releases.json')
+  .then((r) => (r.ok ? r.json() : []))
+  .then((pending: PendingRelease[]) => {
+    const nav = document.querySelector('.nav')!;
+    for (const p of pending) {
+      nav.insertAdjacentHTML(
+        'beforeend',
+        `<a class="nav-alert" href="#/pending/${p.number}" title="${esc(`#${p.number} ${p.title}: releases ${p.version} when merged`)}">!Pending fellowship release PR!</a>`,
+      );
+    }
+    markNav(location.hash);
+  })
+  .catch(() => {
+    // No pending releases file: nothing to announce.
+  });
+
+// Release candidates on rails: shown unless hidden earlier (a display preference, so localStorage).
+const HIDE_RC_KEY = 'psvm.hideRc';
+function setHideRc(hide: boolean) {
+  document.documentElement.toggleAttribute('data-hide-rc', hide);
+  try {
+    if (hide) localStorage.setItem(HIDE_RC_KEY, '1');
+    else localStorage.removeItem(HIDE_RC_KEY);
+  } catch {
+    // Storage blocked: the choice lasts for this page view.
+  }
+}
+try {
+  setHideRc(localStorage.getItem(HIDE_RC_KEY) === '1');
+} catch {
+  // Storage blocked: show them.
+}
+document.addEventListener('click', (e) => {
+  if ((e.target as Element).closest('[data-rc-toggle]')) setHideRc(!document.documentElement.hasAttribute('data-hide-rc'));
+});
+
 route();

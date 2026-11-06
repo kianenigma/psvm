@@ -1,6 +1,6 @@
-import { type CommitRange, commitRange, type OpenPr, openBackports, sdkReleases } from './backports';
-import { type Http, RUNTIMES_REPO } from './http';
-import type { LiveSpec, RuntimesRelease, SdkRelease } from './types';
+import { type CommitRange, commitRange, type OpenPr, openBackports, refOf, sdkReleases } from './backports';
+import { type Http, RUNTIMES_REPO, SDK_REPO } from './http';
+import type { LiveSpec, PendingRelease, RuntimesRelease, SdkLine, SdkRelease } from './types';
 
 /** The polkadot-sdk release a runtimes release is built against, and what its line has since. */
 export interface RuntimesSdk {
@@ -89,4 +89,70 @@ export async function runtimesOverview(http: Http): Promise<RuntimesOverview> {
     ? await commitRange(http, RUNTIMES_REPO, [latest.release.sha, latest.release.name], ['main', 'main'])
     : null;
   return { latest, rows, chains, unreleased };
+}
+
+/** A polkadot-sdk release point with its line. */
+export interface SdkPoint {
+  release: SdkRelease;
+  line: string;
+  lineData: SdkLine;
+  /** Non-rc releases of the line after this one. */
+  newer: SdkRelease[];
+  openBackports: OpenPr[];
+}
+
+export type PendingReleasePage =
+  | { status: 'not-found'; number: number }
+  | {
+      status: 'found';
+      pr: PendingRelease;
+      /** Live state of the PR: it may have been merged or closed since the index was built. */
+      state: 'open' | 'merged' | 'closed';
+      /** The latest runtimes release, which the PR replaces. */
+      previous: RuntimesRelease | null;
+      before: SdkPoint | null;
+      after: SdkPoint | null;
+      /** polkadot-sdk commits from `before` to `after`. */
+      sdkChanges: CommitRange | null;
+    };
+
+/**
+ * A pending runtimes release (found by the indexer): the polkadot-sdk release it moves the runtimes to, compared with
+ * the one the latest release uses. Three to five API calls: the PR state, open backports, and the commits between.
+ */
+export async function pendingReleasePage(http: Http, number: number): Promise<PendingReleasePage> {
+  const [pending, runtimes, releases, open, livePr] = await Promise.all([
+    http.data<PendingRelease[]>('pending-releases.json'),
+    http.data<RuntimesRelease[]>('runtimes-releases.json'),
+    sdkReleases(http),
+    openBackports(http),
+    http.api<{ state: string; merged_at: string | null }>(`/repos/${RUNTIMES_REPO}/pulls/${number}`),
+  ]);
+  if (!runtimes || !releases) throw new Error('Index files missing: run `psvm index --out web/public/data` first.');
+  const pr = (pending ?? []).find((p) => p.number === number);
+  if (!pr) return { status: 'not-found', number };
+
+  const point = (id: string | undefined): SdkPoint | null => {
+    for (const line of releases.lines) {
+      const index = line.releases.findIndex((r) => r.id === id);
+      if (index < 0) continue;
+      return {
+        release: line.releases[index],
+        line: line.name,
+        lineData: line,
+        newer: line.releases.slice(index + 1).filter((r) => !r.rc),
+        openBackports: open.filter((o) => o.base === line.name),
+      };
+    }
+    return null;
+  };
+  const previous = runtimes.find((r) => r.name !== 'main') ?? null;
+  const before = point(previous?.sdkRelease?.id);
+  const after = point(pr.sdkRelease?.id);
+  const sdkChanges =
+    before && after
+      ? await commitRange(http, SDK_REPO, [before.release.sha, refOf(before.release)], [after.release.sha, refOf(after.release)])
+      : null;
+  const state = livePr?.merged_at ? 'merged' : livePr?.state === 'closed' ? 'closed' : 'open';
+  return { status: 'found', pr, state, previous, before, after, sdkChanges };
 }

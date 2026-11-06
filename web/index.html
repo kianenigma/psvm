@@ -23,10 +23,26 @@
           <a href="#/releases">Release lines and open backports</a>
           <a href="#/runtimes">Fellowship runtimes</a>
         </nav>
-        <div class="theme" role="group" aria-label="Theme">
-          <button type="button" data-theme-choice="system">System</button>
-          <button type="button" data-theme-choice="light">Light</button>
-          <button type="button" data-theme-choice="dark">Dark</button>
+        <div class="tools">
+          <div class="theme" role="group" aria-label="Theme">
+            <button type="button" data-theme-choice="system">System</button>
+            <button type="button" data-theme-choice="light">Light</button>
+            <button type="button" data-theme-choice="dark">Dark</button>
+          </div>
+          <details id="token-panel" class="token">
+            <summary><span id="token-state">Add GitHub token</span></summary>
+            <div class="token-body">
+              <p>
+                Without a token GitHub allows 60 API calls per hour; a lookup takes about 5–30. A token raises that to
+                5,000. Use a fine-grained token with no permissions (public data needs none), not your
+                <code>gh auth token</code>. It is kept for this tab only and is only sent to api.github.com.
+              </p>
+              <div class="lookup-row">
+                <input id="token-input" type="password" placeholder="github_pat_…" aria-label="GitHub token" />
+                <button type="button" id="token-save">Save</button>
+              </div>
+            </div>
+          </details>
         </div>
       </div>
       <div class="hero">
@@ -44,18 +60,6 @@
             <button type="submit">Trace PR</button>
           </div>
         </form>
-        <details id="token-panel" class="token">
-          <summary>GitHub token</summary>
-          <p>
-            Without a token GitHub allows 60 API calls per hour; a lookup takes about 5–30. A token raises that to 5,000.
-            Use a fine-grained token with no permissions (public data needs none), not your <code>gh auth token</code>.
-            It is kept for this tab only and is only sent to api.github.com.
-          </p>
-          <div class="lookup-row">
-            <input id="token-input" type="password" placeholder="ghp_… or github_pat_…" />
-            <button type="button" id="token-save" class="secondary">Save token</button>
-          </div>
-        </details>
       </div>
     </header>
     <main id="app" aria-live="polite"></main>

@@ -18,6 +18,7 @@
 //! This library provides functionality to manage and update Polkadot SDK dependencies
 //! in Cargo.toml files.
 
+pub mod index;
 mod tests;
 pub mod versions;
 
@@ -30,8 +31,8 @@ use toml_edit::DocumentMut;
 
 pub use versions::{
     get_latest_polkadot_sdk_version, get_orml_crates_and_version, get_polkadot_sdk_versions,
-    get_release_branches_versions, get_version_mapping_with_fallback,
-    include_orml_crates_in_version_mapping, Repository,
+    get_release_branches_versions, get_version_mapping_at_ref, get_version_mapping_with_fallback,
+    include_orml_crates_in_version_mapping, MappingSource, Repository,
 };
 
 pub const DEFAULT_GIT_SERVER: &str = "https://raw.githubusercontent.com";

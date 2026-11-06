@@ -18,8 +18,8 @@ use env_logger::Env;
 use psvm::{
     get_latest_polkadot_sdk_version, get_orml_crates_and_version, get_polkadot_sdk_versions,
     get_release_branches_versions, get_version_mapping_with_fallback,
-    include_orml_crates_in_version_mapping, update_dependencies, validate_workspace_path,
-    Repository, DEFAULT_GIT_SERVER,
+    include_orml_crates_in_version_mapping, index::IndexOptions, update_dependencies,
+    validate_workspace_path, Repository, DEFAULT_GIT_SERVER,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -28,8 +28,11 @@ use std::path::PathBuf;
 ///
 /// Updates Cargo.toml dependencies based on Polkadot SDK crates.io release branch.
 #[derive(Parser, Debug)]
-#[command(about, author)]
+#[command(about, author, subcommand_negates_reqs = true)]
 struct Command {
+    #[command(subcommand)]
+    subcommand: Option<Subcommand>,
+
     /// Path to a crate folder or Cargo.toml file.
     #[clap(short, long, default_value = "Cargo.toml")]
     path: PathBuf,
@@ -68,10 +71,44 @@ struct Command {
     git_ref: Option<String>,
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum Subcommand {
+    /// Precompute the static JSON data of the "Where is my PR?" web app (needs GITHUB_TOKEN).
+    Index {
+        /// Directory the JSON files are written to.
+        #[clap(long, default_value = "web/public/data")]
+        out: PathBuf,
+
+        /// Directory caching per-commit results between runs.
+        #[clap(long)]
+        cache_dir: Option<PathBuf>,
+
+        /// Skip querying public RPCs for the runtime versions live on chain.
+        #[clap(long)]
+        no_live: bool,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     let cmd = Command::parse();
+
+    if let Some(Subcommand::Index {
+        out,
+        cache_dir,
+        no_live,
+    }) = cmd.subcommand
+    {
+        std::fs::create_dir_all(&out)?;
+        return psvm::index::run(IndexOptions {
+            out,
+            cache_dir,
+            live: !no_live,
+        })
+        .await
+        .map_err(|e| e.to_string().into());
+    }
 
     if cmd.list {
         let crates_versions = if cmd.orml {

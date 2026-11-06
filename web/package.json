@@ -1,0 +1,22 @@
+{
+  "name": "psvm-pr-tracker",
+  "private": true,
+  "type": "module",
+  "description": "Where is my PR? polkadot-sdk PR -> releases -> crate versions -> fellowship runtimes",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "check-index": "node scripts/check-index.mjs"
+  },
+  "dependencies": {
+    "yaml": "2.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.21",
+    "typescript": "5.8.3",
+    "vite": "6.3.5",
+    "vitest": "3.2.4"
+  }
+}

@@ -51,6 +51,45 @@ psvm -v "1.6.0" -O
 
 > Listing all available Polkadot SDK versions requires querying the GitHub API, so your IP may be rate-limited. If a rate limit is reached, the tool will fallback to the GitHub CLI to list the versions. Ensure you have the GitHub CLI installed and authenticated to avoid any issue, or you can alternatively set the `GITHUB_TOKEN` environment variable to your GitHub API token.
 
+## Where is my PR?
+
+`web/` holds a static web app that traces a polkadot-sdk PR to the releases that contain it, the first crate
+versions that ship it, and the [fellowship runtimes](https://github.com/polkadot-fellows/runtimes) releases that
+lock those versions. It is deployed to GitHub Pages by `.github/workflows/pages.yml`.
+
+![PR #12408 in the tracker](docs/pr-tracker.png)
+
+For example, [#12408](https://github.com/paritytech/polkadot-sdk/pull/12408) (`pallet-asset-conversion`) is in
+`polkadot-stable2609` (`polkadot-v1.25.0`) and its rcs and in `polkadot-stable6210-rc1`, but not in `stable2606` or
+`unstable2604`. The first fixed crate version is `pallet-asset-conversion 32.0.0`. Every fellowship runtimes release
+so far locks `31.0.0`, so none of them contains the change.
+
+How it works:
+
+- `psvm index` precomputes everything that does not depend on the PR into static JSON: polkadot-sdk release lines,
+  their tags and untagged crates.io publications ("Post crates release" commits), each crate's version at every
+  release point, the locked versions and spec versions of every runtimes release, and the runtime versions live on
+  Polkadot, Kusama and their system chains.
+- In the browser, the app reads the PR, its prdoc and its backport PRs, then finds the first release of each line
+  that contains the merge (or backport) commit. It uses a binary search with GitHub's compare API, which takes about
+  5–30 API calls per lookup. Runtimes are matched by published crate version, never by comparing version numbers.
+- The PR page also lists the PR's open backports. `#/releases` shows every release line with the backports still
+  open into it, and `#/release/<tag>` shows the open backports a single release is missing. The runtimes table names
+  the polkadot-sdk release each runtimes release builds on, linked to that page, with a warning when its line has
+  open backports.
+
+Run it locally:
+
+```sh
+# Build the index (needs a GitHub token for the GraphQL API; the cache makes reruns fast)
+GITHUB_TOKEN=$(gh auth token) cargo run -- index --out web/public/data --cache-dir target/psvm-index-cache
+# Serve the app on http://localhost:5173/#/pr/12408
+cd web && npm install && npm run dev
+# Sanity-check the index output (also run before every deploy), and unit-test the parsing helpers
+npm run check-index
+npm test
+```
+
 ## Using as a Library
 
 You can use `psvm` as a library in your Rust project by adding it to your `Cargo.toml`:

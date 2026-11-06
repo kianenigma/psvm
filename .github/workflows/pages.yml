@@ -1,0 +1,72 @@
+name: PR tracker (GitHub Pages)
+
+# Rebuilds the "Where is my PR?" index and deploys `web/` to GitHub Pages: on every push to main, daily at
+# midnight UTC, and on manual dispatch by the repository owner.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    # Anyone with write access can dispatch a workflow; only the owner's manual runs proceed.
+    if: github.event_name != 'workflow_dispatch' || github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Per-commit indexer results never go stale, so the cache only ever grows.
+      - name: Cache index results
+        uses: actions/cache@v4
+        with:
+          path: target/psvm-index-cache
+          key: psvm-index-${{ github.run_id }}
+          restore-keys: psvm-index-
+
+      - name: Build index
+        run: cargo run --locked --release -- index --out web/public/data --cache-dir target/psvm-index-cache
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Check index, test and build site
+        working-directory: web
+        run: |
+          npm run check-index
+          npm ci
+          npm test
+          npm run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

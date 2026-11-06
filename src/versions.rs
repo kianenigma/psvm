@@ -184,7 +184,7 @@ pub async fn get_latest_polkadot_sdk_version() -> Result<String, Box<dyn std::er
     Ok(version)
 }
 
-async fn github_query(url: &str) -> Result<reqwest::Response, reqwest::Error> {
+pub(crate) async fn github_query(url: &str) -> Result<reqwest::Response, reqwest::Error> {
     let mut builder = reqwest::Client::new()
         .get(url)
         .header("User-Agent", "reqwest")
@@ -388,10 +388,68 @@ fn version_to_url(base_url: &str, version: &str, source: &str) -> String {
         format!("release-crates-io-v{}", version)
     };
 
+    git_ref_to_url(base_url, &version, source)
+}
+
+/// Builds the raw URL of `source` (e.g. `Plan.toml`) in polkadot-sdk at an exact git ref (tag,
+/// branch or commit sha), without any version-name normalisation.
+fn git_ref_to_url(base_url: &str, git_ref: &str, source: &str) -> String {
     format!(
         "{}/paritytech/polkadot-sdk/{}/{}",
-        base_url, version, source
+        base_url, git_ref, source
     )
+}
+
+/// The file a crate version mapping was read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MappingSource {
+    PlanToml,
+    CargoLock,
+}
+
+impl MappingSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MappingSource::PlanToml => "Plan.toml",
+            MappingSource::CargoLock => "Cargo.lock",
+        }
+    }
+}
+
+/// Same as [`get_version_mapping_with_fallback`], but reads the files at an exact git ref (tag,
+/// branch or commit sha) and takes the set of parity-owned crates up front, so that callers
+/// resolving many refs only query crates.io once.
+///
+/// Returns `Ok(None)` if neither `Plan.toml` nor `Cargo.lock` exist at the ref.
+pub async fn get_version_mapping_at_ref(
+    base_url: &str,
+    git_ref: &str,
+    parity_owned_crates: &HashSet<String>,
+) -> Result<Option<(BTreeMap<String, String>, MappingSource)>, Box<dyn std::error::Error>> {
+    let plan_url = git_ref_to_url(base_url, git_ref, "Plan.toml");
+    if let Some(content) = fetch_optional(&plan_url).await? {
+        let packages = filter_plan_packages(toml::from_str(&content)?, parity_owned_crates);
+        return Ok(Some((packages, MappingSource::PlanToml)));
+    }
+
+    let lock_url = git_ref_to_url(base_url, git_ref, "Cargo.lock");
+    if let Some(content) = fetch_optional(&lock_url).await? {
+        return Ok(Some((
+            get_cargo_packages(&content)?,
+            MappingSource::CargoLock,
+        )));
+    }
+
+    Ok(None)
+}
+
+/// Fetches `url`, mapping a 404 to `None` and any other non-success status to an error.
+async fn fetch_optional(url: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let response = github_query(url).await?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    Ok(Some(response.error_for_status()?.text().await?))
 }
 
 pub async fn get_version_mapping(
@@ -437,8 +495,16 @@ async fn get_plan_packages(
 
     let parity_owned_crates = get_parity_crate_owner_crates().await?;
 
+    Ok(filter_plan_packages(plan_toml, &parity_owned_crates))
+}
+
+/// Keeps the crates of a `Plan.toml` that are (or were) published, mapped to their new version.
+fn filter_plan_packages(
+    plan_toml: PlanToml,
+    parity_owned_crates: &HashSet<String>,
+) -> BTreeMap<String, String> {
     // Filter local packages and collect them into a JSON object
-    let plan_packages: BTreeMap<_, _> = plan_toml
+    plan_toml
         .crates
         .into_iter()
         .filter(|pkg| {
@@ -457,9 +523,7 @@ async fn get_plan_packages(
             }
         })
         .map(|pkg| (pkg.name, pkg.to))
-        .collect();
-
-    Ok(plan_packages)
+        .collect()
 }
 
 /// Represents a single branch in a repository.

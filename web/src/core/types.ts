@@ -77,6 +77,17 @@ export interface PendingRelease {
   sdkRelease?: { id: string; matched: number; total: number };
 }
 
+/** A master PR released on an older stable line that some newer stable lines do not have. */
+export interface MissedPr {
+  number: number;
+  title: string;
+  mergedAt: string;
+  /** Older lines, with the id of the first release of each that has it. */
+  released: { line: string; release: string }[];
+  /** Newer lines with no release or branch commit that has it. */
+  missing: string[];
+}
+
 export interface Meta {
   generatedAt: number;
   psvmVersion: string;

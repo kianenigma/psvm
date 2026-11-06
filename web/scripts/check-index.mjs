@@ -32,6 +32,9 @@ check(runtimes.length >= 20, `only ${runtimes.length} runtimes releases`);
 check(latest?.specs.length >= 5, `latest runtimes release ${latest?.name} has ${latest?.specs.length ?? 0} spec versions`);
 check(latest?.sdkRelease, `latest runtimes release ${latest?.name} matches no polkadot-sdk release`);
 
+check(Array.isArray(read('pending-releases.json')), 'pending-releases.json is not a list');
+check(Array.isArray(read('missed-prs.json')), 'missed-prs.json is not a list');
+
 // RPCs fail independently; an empty file means all of them did (or the index ran with --no-live).
 check(read('live-specs.json').length > 0, 'live-specs.json is empty');
 

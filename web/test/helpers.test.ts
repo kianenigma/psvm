@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compareLines, parseBackportTitle, sdkReleases } from '../src/core/backports';
-import { Http, RateLimitError } from '../src/core/http';
+import { BadTokenError, Http, RateLimitError } from '../src/core/http';
 import { crateOfFile, isBackportOf, parsePrInput } from '../src/core/lookup';
 import type { SdkLine } from '../src/core/types';
 
@@ -66,6 +66,11 @@ describe('helpers', () => {
     }));
     const http = new Http(async () => new Response(JSON.stringify({ lines }), { headers: { 'content-type': 'application/json' } }), { dataBase: 'data/' });
     expect((await sdkReleases(http))?.lines.map((l) => l.name)).toEqual(['stable2609', 'stable2606', 'unstable2604', 'stable2603']);
+  });
+
+  it('reports a rejected token as such, not as a rate limit', async () => {
+    const http = new Http(async () => new Response('{}', { status: 401 }), { dataBase: 'data/', token: 'bad' });
+    await expect(http.api('/x')).rejects.toBeInstanceOf(BadTokenError);
   });
 
   it('turns an exhausted rate limit into a RateLimitError', async () => {

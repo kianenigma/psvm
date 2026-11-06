@@ -7,8 +7,11 @@ import {
   releasePage,
   releasesOverview,
   type LineOverview,
+  isDatedStableLine,
+  type MissedRow,
+  missedPrs,
 } from './core/backports';
-import { Http, type KV, RateLimitError, RUNTIMES_REPO, SDK_REPO } from './core/http';
+import { BadTokenError, Http, type KV, RateLimitError, RUNTIMES_REPO, SDK_REPO } from './core/http';
 import {
   type CrateLineVersion,
   type LockVerdict,
@@ -190,8 +193,13 @@ function renderOpenPr(pr: OpenPr, { showTarget = false, showOriginal = false } =
 
 function renderLines(report: Merged): string {
   const pending = (line: string) => report.openBackports.filter((pr) => pr.base === line);
-  const shown = report.lines.filter((l) => l.firstIndex !== null || pending(l.line.name).length);
-  const notOn = report.lines.filter((l) => l.firstIndex === null && !pending(l.line.name).length);
+  const anyHas = report.lines.some((l) => l.firstIndex !== null);
+  // Lines are newest first. A stable line without the change is a gap if an older stable line has it: upgrading from
+  // that line to this one loses the change (see the "Missed backports" page).
+  const stable = report.lines.filter((l) => isDatedStableLine(l.line));
+  const olderWithIt = (l: (typeof report.lines)[number]) =>
+    isDatedStableLine(l.line) ? stable.slice(stable.indexOf(l) + 1).filter((o) => o.firstIndex !== null) : [];
+  const shown = anyHas ? report.lines : report.lines.filter((l) => pending(l.line.name).length);
   const lineNames = new Set(report.lines.map((l) => l.line.name));
   const elsewhere = report.openBackports.filter((pr) => !pr.base || !lineNames.has(pr.base));
 
@@ -202,9 +210,15 @@ function renderLines(report: Merged): string {
         ? `<div class="pending"><strong>${open.length === 1 ? 'Backport pending' : `${open.length} backports pending`}</strong>: not merged into <code>${esc(l.line.name)}</code> yet, so no release of this line has ${l.firstIndex === null ? 'it' : 'it through them'}.<ul class="prs">${open.map((pr) => renderOpenPr(pr)).join('')}</ul></div>`
         : '';
       if (l.firstIndex === null) {
-        return `<div class="line">
+        const older = olderWithIt(l);
+        const marker = open.length
+          ? ''
+          : older.length
+            ? `<div class="no-backport gap">✗ No backport, but ${older.map((o) => `<code>${esc(o.line.name)}</code>`).join(', ')} ${older.length === 1 ? 'has' : 'have'} it: upgrading from ${older.length === 1 ? 'it' : 'them'} to this line loses the change.</div>`
+            : `<div class="no-backport">✗ No backport: branched off before the merge.</div>`;
+        return `<div class="line missing">
           <div class="line-name">${esc(l.line.name)}</div>
-          <div>${renderRail(l.line, { firstIndex: null })}${openNote}</div>
+          <div>${renderRail(l.line, { firstIndex: null })}${marker}${openNote}</div>
         </div>`;
       }
       const first = l.line.releases[l.firstIndex];
@@ -234,7 +248,7 @@ function renderLines(report: Merged): string {
     })
     .join('');
 
-  const empty = shown.length
+  const empty = anyHas
     ? ''
     : `<p class="status">No indexed release contains this PR yet. It is merged into <code>${esc(report.pr.base)}</code> and will ship with the next release cut from it.</p>`;
   const other = elsewhere.length
@@ -246,7 +260,6 @@ function renderLines(report: Merged): string {
     <p class="section-note">Each row is a release line. Its releases run left to right, oldest to newest; hover a release for its full name and date, or click it to see the release and the backports it is still missing. Once a release contains the change, every later release on that line does too.</p>
     ${shown.length ? RAIL_LEGEND : ''}
     ${empty}<div class="lines">${rows}</div>${other}
-    ${notOn.length ? `<p class="not-on">Not on ${notOn.map((l) => `<code>${esc(l.line.name)}</code>`).join(', ')}: these lines branched off before the merge and have no backport.</p>` : ''}
   </section>`;
 }
 
@@ -604,6 +617,43 @@ function renderPendingPage(page: PendingReleasePage): string {
     ${backports}`;
 }
 
+// --- Missed backports --------------------------------------------------------------------------
+
+function renderMissedPage(rows: MissedRow[]): string {
+  if (!rows.length) {
+    return `<div class="pr-head"><h2>Missed backports</h2></div><p class="status">No PR released on an older stable line is missing from a newer one.</p>`;
+  }
+  const gaps = rows.reduce((n, r) => n + r.missing.length, 0);
+  const open = rows.reduce((n, r) => n + r.missing.filter((m) => m.backport).length, 0);
+  const body = rows
+    .map(({ pr, released, missing }) => {
+      const prLink = link(`https://github.com/${SDK_REPO}/pull/${pr.number}`, `#${pr.number}`);
+      const missingCells = missing
+        .map((m) => {
+          const status = m.backport
+            ? `<span class="flag warn">⚠ backport ${link(m.backport.url, `#${m.backport.number}`)} open</span>`
+            : `<span class="flag no">✗ no backport</span>`;
+          const latest = m.latest ? `not in ${releaseLink(m.latest)}` : '';
+          return `<div class="missing-line"><code>${esc(m.line)}</code> ${status}<span class="sub">${latest}</span></div>`;
+        })
+        .join('');
+      return `<tr>
+        <td class="wrap">${prLink} ${esc(pr.title)}<span class="sub">merged into master ${date(pr.mergedAt)}</span></td>
+        <td>${released.map((r) => `<div>${releaseLink(r)}</div>`).join('')}</td>
+        <td>${missingCells}</td>
+      </tr>`;
+    })
+    .join('');
+  return `<div class="pr-head">
+      <h2>Missed backports</h2>
+      <div class="facts"><span>${rows.length} PRs</span><span>${gaps} missing lines</span><span>${open} with an open backport</span></div>
+    </div>
+    <section>
+      <p class="section-note">Master PRs that a release of an older stable line ships, but a newer stable line does not: it branched off before the PR merged and no backport landed on it. Upgrading from the older line to the newer one loses the change. Some may be deliberate, for example when the newer line no longer has the code the PR fixes.</p>
+      <div class="table-wrap"><table><tr><th>PR</th><th>Released in</th><th>Missing from</th></tr>${body}</table></div>
+    </section>`;
+}
+
 // --- Page --------------------------------------------------------------------------------------
 
 function renderReport(report: Report): string {
@@ -652,7 +702,7 @@ async function show<T>(loading: string, load: (http: Http, progress: (m: string)
     renderFooter();
   } catch (e) {
     if (id !== current) return;
-    if (e instanceof RateLimitError) {
+    if (e instanceof RateLimitError || e instanceof BadTokenError) {
       tokenPanel.open = true;
       status(esc(e.message), true);
     } else {
@@ -674,7 +724,7 @@ function renderFooter() {
 }
 
 /** Pages other than the PR trace; the PR field and the "Trace a PR" highlight belong to the trace pages only. */
-const OTHER_PAGES = /^#\/(release|runtimes|pending)/;
+const OTHER_PAGES = /^#\/(release|runtimes|pending|missed)/;
 
 function markNav(hash: string) {
   document.querySelectorAll<HTMLAnchorElement>('.nav a').forEach((a) => {
@@ -694,6 +744,8 @@ function route() {
   const release = hash.match(/^#\/release\/(.+)$/);
   const pending = hash.match(/^#\/pending\/(\d+)$/);
   if (pr) run(Number(pr[1]));
+  else if (hash === '#/missed')
+    void show('Loading missed backports…', (http) => missedPrs(http), renderMissedPage, 'Missed backports · Where is my PR?');
   else if (pending) {
     const number = Number(pending[1]);
     void show(`Loading pending release #${number}…`, (http) => pendingReleasePage(http, number), renderPendingPage, `Pending release #${number} · Where is my PR?`);
@@ -731,6 +783,13 @@ function showTokenState() {
 }
 tokenInput.value = storageKV.get(TOKEN_KEY) ?? '';
 showTokenState();
+document.getElementById('token-clear')!.addEventListener('click', () => {
+  tokenInput.value = '';
+  storageKV.set(TOKEN_KEY, '');
+  tokenPanel.open = false;
+  showTokenState();
+  route();
+});
 document.getElementById('token-save')!.addEventListener('click', () => {
   storageKV.set(TOKEN_KEY, tokenInput.value.trim());
   tokenPanel.open = false;
@@ -790,22 +849,25 @@ fetch('data/pending-releases.json')
     // No pending releases file: nothing to announce.
   });
 
-// Release candidates on rails: shown unless hidden earlier (a display preference, so localStorage).
-const HIDE_RC_KEY = 'psvm.hideRc';
+// Release candidates on rails: hidden unless shown earlier (a display preference, so localStorage).
+const SHOW_RC_KEY = 'psvm.showRc';
 function setHideRc(hide: boolean) {
   document.documentElement.toggleAttribute('data-hide-rc', hide);
   try {
-    if (hide) localStorage.setItem(HIDE_RC_KEY, '1');
-    else localStorage.removeItem(HIDE_RC_KEY);
+    if (hide) localStorage.removeItem(SHOW_RC_KEY);
+    else localStorage.setItem(SHOW_RC_KEY, '1');
   } catch {
     // Storage blocked: the choice lasts for this page view.
   }
 }
+let showRc = false;
 try {
-  setHideRc(localStorage.getItem(HIDE_RC_KEY) === '1');
+  showRc = localStorage.getItem(SHOW_RC_KEY) === '1';
+  localStorage.removeItem('psvm.hideRc'); // The key of the earlier shown-by-default setting.
 } catch {
-  // Storage blocked: show them.
+  // Storage blocked: hide them.
 }
+setHideRc(!showRc);
 document.addEventListener('click', (e) => {
   if ((e.target as Element).closest('[data-rc-toggle]')) setHideRc(!document.documentElement.hasAttribute('data-hide-rc'));
 });

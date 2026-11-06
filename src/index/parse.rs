@@ -191,6 +191,33 @@ pub fn parse_release_changelog_patch(patch: &str) -> Option<String> {
     })
 }
 
+/// The PR numbers a commit title mentions: `[stable2606] Backport #11910 (#13531)` gives `[11910, 13531]`.
+pub fn pr_mentions(title: &str) -> Vec<u64> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"#(\d+)\b").expect("valid regex"));
+    re.captures_iter(title)
+        .filter_map(|c| c[1].parse().ok())
+        .collect()
+}
+
+/// The month a line is named after (`stable2606` -> 2026 * 12 + 5), or `None` for stray tags whose `YYMM` is no
+/// month (`stable1985`) or is more than 6 months from the line's first release (`stable6210`, tagged in 2026).
+pub fn line_month(line: &str, first_release_date: &str) -> Option<u32> {
+    let digits = line.get(line.len().checked_sub(4)?..)?;
+    let (yy, mm): (u32, u32) = (
+        digits.get(..2)?.parse().ok()?,
+        digits.get(2..)?.parse().ok()?,
+    );
+    if !(1..=12).contains(&mm) {
+        return None;
+    }
+    let month = (2000 + yy) * 12 + mm - 1;
+    let year: u32 = first_release_date.get(..4)?.parse().ok()?;
+    let first_month: u32 = first_release_date.get(5..7)?.parse().ok()?;
+    let first = year * 12 + first_month - 1;
+    (month.abs_diff(first) <= 6).then_some(month)
+}
+
 /// `spec_name` and `spec_version` of a runtime, read from its `lib.rs`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSpec {
@@ -293,6 +320,21 @@ mod tests {
             parse_release_changelog_patch("-## [Unreleased]\n+## [Next]\n"),
             None
         );
+    }
+
+    #[test]
+    fn finds_pr_mentions_and_line_months() {
+        assert_eq!(
+            pr_mentions("[stable2606] Backport #11910 (#13531)"),
+            vec![11910, 13531]
+        );
+        assert_eq!(pr_mentions("Bump node version"), Vec::<u64>::new());
+        assert_eq!(
+            line_month("stable2606", "2026-06-02T16:31:42Z"),
+            Some(2026 * 12 + 5)
+        );
+        assert_eq!(line_month("stable1985", "2024-11-06T14:22:28Z"), None);
+        assert_eq!(line_month("stable6210", "2026-10-20T12:04:43Z"), None);
     }
 
     #[test]

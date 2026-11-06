@@ -1,5 +1,5 @@
 import { Http, SDK_REPO } from './http';
-import type { SdkLine, SdkRelease, SdkReleases } from './types';
+import type { MissedPr, SdkLine, SdkRelease, SdkReleases } from './types';
 
 /** An open (unmerged) pull request into a release branch. */
 export interface OpenPr {
@@ -88,6 +88,11 @@ function lineMonth(line: SdkLine): number | null {
   const month = (2000 + Number(match[1])) * 12 + Number(match[2]) - 1;
   const first = new Date(line.releases[0]?.date ?? 0);
   return Math.abs(month - (first.getUTCFullYear() * 12 + first.getUTCMonth())) <= 6 ? month : null;
+}
+
+/** A `stableYYMM` line whose name is a real month (not a stray tag like `stable6210`). */
+export function isDatedStableLine(line: SdkLine): boolean {
+  return line.name.startsWith('stable') && lineMonth(line) !== null;
 }
 
 /** The next older line of the same kind (`stable` or `unstable`) with a real `YYMM`, if any. */
@@ -262,4 +267,35 @@ export async function releasePage(http: Http, id: string): Promise<ReleasePage> 
     };
   }
   return { status: 'not-found', id };
+}
+
+export interface MissedRow {
+  pr: MissedPr;
+  released: SdkRelease[];
+  /** Each newer line that misses it, with the open backport into it, if any. */
+  missing: { line: string; latest: SdkRelease | null; backport: OpenPr | null }[];
+}
+
+/**
+ * The "missed PRs" found by the indexer, with each missing line's latest release and any open backport into it. One to
+ * five API calls (the open backports search).
+ */
+export async function missedPrs(http: Http): Promise<MissedRow[]> {
+  const [missed, releases, open] = await Promise.all([
+    http.data<MissedPr[]>('missed-prs.json'),
+    sdkReleases(http),
+    openBackports(http),
+  ]);
+  if (!missed || !releases) throw new Error('Index files missing: run `psvm index --out web/public/data` first.');
+  const byId = new Map(releases.lines.flatMap((l) => l.releases.map((r) => [r.id, r] as const)));
+  const latest = (line: string) => releases.lines.find((l) => l.name === line)?.releases.filter((r) => !r.rc).at(-1) ?? null;
+  return missed.map((pr) => ({
+    pr,
+    released: pr.released.flatMap((r) => byId.get(r.release) ?? []),
+    missing: pr.missing.map((line) => ({
+      line,
+      latest: latest(line),
+      backport: open.find((o) => o.backportOf === pr.number && o.base === line) ?? null,
+    })),
+  }));
 }

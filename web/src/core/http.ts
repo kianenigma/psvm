@@ -29,6 +29,17 @@ export class RateLimitError extends Error {
   }
 }
 
+/** GitHub rejected the token (401): expired, revoked, mistyped, or not yet approved by its organization. */
+export class BadTokenError extends Error {
+  constructor() {
+    super(
+      'GitHub rejected your token (HTTP 401, bad credentials): it is expired, revoked, copied incompletely, or still ' +
+        'waiting for its organization to approve it. Not a rate limit. Replace or clear the token to continue.',
+    );
+    this.name = 'BadTokenError';
+  }
+}
+
 export const API = 'https://api.github.com';
 export const RAW = 'https://raw.githubusercontent.com';
 export const SDK_REPO = 'paritytech/polkadot-sdk';
@@ -66,6 +77,7 @@ export class Http {
       const reset = response.headers.get('x-ratelimit-reset');
       throw new RateLimitError(reset ? new Date(Number(reset) * 1000) : null, !!this.options.token);
     }
+    if (response.status === 401 && this.options.token) throw new BadTokenError();
     if (response.status === 404 || response.status === 422) return null;
     if (!response.ok) throw new Error(`GitHub API ${path}: HTTP ${response.status}`);
     return (await response.json()) as T;

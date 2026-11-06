@@ -506,10 +506,19 @@ h2 {
   vertical-align: 1px;
 }
 
-.not-on {
-  margin-top: 14px;
-  color: var(--ink-soft);
+/* A line without the change: grey rail and a marker; red when an older line has the change (a gap). */
+.line.missing .line-name {
+  background: var(--ink-soft);
+}
+
+.no-backport {
   font-size: 0.92rem;
+  color: var(--ink-soft);
+}
+
+.no-backport.gap {
+  color: var(--no);
+  font-weight: 500;
 }
 
 /* Tables */
@@ -629,6 +638,19 @@ tr.hidden {
 
 .flag.warn {
   color: var(--unknown);
+}
+
+.flag.no {
+  color: var(--no);
+}
+
+td.wrap {
+  white-space: normal;
+  min-width: 280px;
+}
+
+.missing-line + .missing-line {
+  margin-top: 6px;
 }
 
 .pending {

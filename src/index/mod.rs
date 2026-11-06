@@ -28,6 +28,7 @@
 //! - `meta.json`: generation time.
 
 mod github;
+mod missed;
 pub mod parse;
 
 use crate::versions::{get_parity_crate_owner_crates, get_version_mapping_at_ref, MappingSource};
@@ -134,6 +135,12 @@ pub struct SdkLine {
     pub has_branch: bool,
     /// Release points, oldest first.
     pub releases: Vec<SdkRelease>,
+    /// Committer date of the commit where the branch left `master`, if the branch exists.
+    #[serde(skip)]
+    pub branch_off: Option<String>,
+    /// The branch history since `branch_off`, newest first: each commit's sha and the PR numbers its title mentions.
+    #[serde(skip)]
+    pub history: Vec<(String, Vec<u64>)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -273,6 +280,8 @@ pub async fn run(options: IndexOptions) -> Result<(), Error> {
 
     let crate_paths = crate_paths(&gh, &cache, &crates).await?;
     let pending = pending_releases(&gh, &cache).await?;
+    let mentioned = missed::mentioned_prs(&gh, &cache, &missed::mentioned_numbers(&lines)).await?;
+    let missed = missed::missed_prs(&lines, &mentioned);
     let live = if options.live {
         live_specs(&gh, &runtimes).await
     } else {
@@ -287,6 +296,7 @@ pub async fn run(options: IndexOptions) -> Result<(), Error> {
         &crate_paths,
         &live,
         &pending,
+        &missed,
     )
 }
 
@@ -333,16 +343,36 @@ async fn line_with_publications(
     name: String,
     mut releases: Vec<SdkRelease>,
 ) -> Result<SdkLine, Error> {
-    // Publications happen after the first rc is cut, which happens after the branch-off.
-    let since = releases
+    // Publications happen after the first rc is cut; backports can land from the branch-off on.
+    let compare = format!(
+        "/repos/{}/compare/master...{}?per_page=1&page=2",
+        SDK_REPO, name
+    );
+    let branch_off = gh.rest(&compare).await?.and_then(|c| {
+        c["merge_base_commit"]["commit"]["committer"]["date"]
+            .as_str()
+            .map(String::from)
+    });
+    let first_release = releases
         .iter()
         .map(|r| r.date.as_str())
         .min()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let since = branch_off
+        .as_deref()
+        .map_or(first_release, |b| b.min(first_release))
         .to_string();
     let commits = gh.commits_since(SDK_REPO, &name, &since).await?;
     let has_branch = commits.is_some();
     let history: Vec<String> = commits.iter().flatten().map(|c| c.sha.clone()).collect();
+    let mentions: Vec<(String, Vec<u64>)> = commits
+        .iter()
+        .flatten()
+        .map(|c| {
+            let title = c.message.lines().next().unwrap_or_default();
+            (c.sha.clone(), parse::pr_mentions(title))
+        })
+        .collect();
 
     for commit in commits.into_iter().flatten() {
         let first_line = commit.message.lines().next().unwrap_or_default();
@@ -375,6 +405,8 @@ async fn line_with_publications(
         name,
         has_branch,
         releases,
+        branch_off,
+        history: mentions,
     })
 }
 
@@ -739,6 +771,7 @@ fn matching_sdk_release<'a>(
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_output(
     out: &Path,
     lines: &[SdkLine],
@@ -747,6 +780,7 @@ fn write_output(
     crate_paths: &BTreeMap<String, String>,
     live: &[LiveSpec],
     pending: &[PendingRelease],
+    missed: &[missed::MissedPr],
 ) -> Result<(), Error> {
     let mut shards: BTreeMap<&str, CrateShard> = BTreeMap::new();
     let mut origin_ranks: HashMap<(&str, &str), (bool, bool, &str)> = HashMap::new();
@@ -841,6 +875,7 @@ fn write_output(
     write("crate-paths.json", serde_json::to_value(crate_paths)?)?;
     write("live-specs.json", serde_json::to_value(live)?)?;
     write("pending-releases.json", serde_json::to_value(&pending_out)?)?;
+    write("missed-prs.json", serde_json::to_value(missed)?)?;
     write(
         "meta.json",
         serde_json::json!({
@@ -975,6 +1010,8 @@ mod tests {
             name: "stable2606".into(),
             has_branch: true,
             releases: vec![tagged, untagged],
+            branch_off: None,
+            history: vec![],
         }];
         let mappings = HashMap::from([
             (
@@ -1011,6 +1048,7 @@ mod tests {
             &mappings,
             &runtimes,
             &BTreeMap::new(),
+            &[],
             &[],
             &[],
         )

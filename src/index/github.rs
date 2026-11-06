@@ -106,6 +106,25 @@ impl GitHub {
         Ok(Some(response.error_for_status()?.text().await?))
     }
 
+    /// Runs a GraphQL query and returns its `data`. Errors next to data (e.g. one alias of a batch naming a number
+    /// that is not a pull request) are logged and that field is `null`; errors without data fail.
+    pub async fn graphql(&self, query: &str, variables: Value) -> Result<Value, Error> {
+        let body = json!({ "query": query, "variables": variables });
+        let request = self
+            .client
+            .post("https://api.github.com/graphql")
+            .json(&body);
+        let mut value: Value = self.send(request).await?.error_for_status()?.json().await?;
+        let data = value["data"].take();
+        if let Some(errors) = value.get("errors") {
+            if data.is_null() {
+                return Err(format!("GraphQL error: {}", errors).into());
+            }
+            log::debug!("GraphQL partial errors: {}", errors);
+        }
+        Ok(data)
+    }
+
     /// All tags of `owner/repo`, with the commit (not annotated tag object) they point to.
     pub async fn tags(&self, owner: &str, repo: &str) -> Result<Vec<TagRef>, Error> {
         const QUERY: &str = r#"
@@ -126,19 +145,9 @@ query($owner: String!, $name: String!, $cursor: String) {
         let mut tags = vec![];
         let mut cursor: Option<String> = None;
         loop {
-            let body = json!({
-                "query": QUERY,
-                "variables": { "owner": owner, "name": repo, "cursor": cursor },
-            });
-            let request = self
-                .client
-                .post("https://api.github.com/graphql")
-                .json(&body);
-            let value: Value = self.send(request).await?.error_for_status()?.json().await?;
-            if let Some(errors) = value.get("errors") {
-                return Err(format!("GraphQL error: {}", errors).into());
-            }
-            let refs = &value["data"]["repository"]["refs"];
+            let variables = json!({ "owner": owner, "name": repo, "cursor": cursor });
+            let data = self.graphql(QUERY, variables).await?;
+            let refs = &data["repository"]["refs"];
             for node in refs["nodes"].as_array().into_iter().flatten() {
                 // Lightweight tags point to the commit, annotated tags to a tag object pointing
                 // to it. Tags of trees or blobs have neither and are skipped.

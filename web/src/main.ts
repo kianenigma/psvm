@@ -584,6 +584,7 @@ function route() {
       href === '#/releases' ? hash.startsWith('#/release') : href === '#/runtimes' ? hash === href : !/^#\/(release|runtimes)/.test(hash);
     a.toggleAttribute('aria-current', active);
   });
+  document.body.dataset.page = hash === '' || hash === '#/' ? 'home' : 'other';
   // The PR field only belongs to the trace pages; the other pages keep just the token panel.
   form.hidden = /^#\/(release|runtimes)/.test(hash);
   const pr = hash.match(/^#\/pr\/(\d+)/);
@@ -623,6 +624,28 @@ document.getElementById('token-save')!.addEventListener('click', () => {
   tokenPanel.open = false;
   route();
 });
+
+// Theme switch: `public/theme.js` applies the saved choice before paint; this keeps it and the buttons in sync.
+// localStorage (not sessionStorage) is fine here: a display preference, nothing to leak.
+const THEME_KEY = 'psvm.theme';
+function setTheme(choice: string) {
+  if (choice === 'light' || choice === 'dark') document.documentElement.dataset.theme = choice;
+  else delete document.documentElement.dataset.theme;
+  const current = document.documentElement.dataset.theme ?? 'system';
+  document.querySelectorAll<HTMLButtonElement>('[data-theme-choice]').forEach((b) => {
+    b.setAttribute('aria-pressed', String(b.dataset.themeChoice === current));
+  });
+  try {
+    if (current === 'system') localStorage.removeItem(THEME_KEY);
+    else localStorage.setItem(THEME_KEY, current);
+  } catch {
+    // Storage blocked: the choice lasts for this page view.
+  }
+}
+document.querySelectorAll<HTMLButtonElement>('[data-theme-choice]').forEach((b) => {
+  b.addEventListener('click', () => setTheme(b.dataset.themeChoice!));
+});
+setTheme(document.documentElement.dataset.theme ?? 'system');
 
 window.addEventListener('hashchange', route);
 fetch('data/meta.json')

@@ -1,39 +1,31 @@
+/* Colors follow the theme: `light-dark()` picks by `color-scheme`, which is the system setting unless the theme
+   switch pins it via `data-theme` on <html>. */
 :root {
-  --paper: #f5f6fa;
-  --surface: #ffffff;
-  --ink: #1c1a2b;
-  --ink-soft: #5d5a72;
-  --rule: #dcdce6;
-  --accent: #5b3fd1;
-  --accent-soft: #ece8fb;
-  --yes: #17794f;
-  --yes-soft: #dff3e9;
-  --no: #b02a43;
-  --no-soft: #fbe4e8;
-  --unknown: #96620a;
-  --unknown-soft: #fbf0d9;
+  color-scheme: light dark;
+  --paper: light-dark(#f3f4f7, #15161c);
+  --surface: light-dark(#ffffff, #1d1e26);
+  --ink: light-dark(#191a23, #e9eaf1);
+  --ink-soft: light-dark(#5b5d6e, #a0a2b4);
+  --rule: light-dark(#dadce5, #30323f);
+  --accent: light-dark(#c3006a, #ff6fb5);
+  --accent-soft: light-dark(#fbe3ef, #3d1a2d);
+  --on-accent: light-dark(#ffffff, #15161c);
+  --yes: light-dark(#13774c, #5fd39d);
+  --yes-soft: light-dark(#ddf2e7, #16382a);
+  --no: light-dark(#b02a43, #ff8c9f);
+  --no-soft: light-dark(#fbe4e8, #431d27);
+  --unknown: light-dark(#93600a, #f0bd5a);
+  --unknown-soft: light-dark(#fbf0d9, #3d2f12);
   --sans: 'IBM Plex Sans', system-ui, sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+:root[data-theme='light'] {
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    --paper: #15141f;
-    --surface: #1e1c2b;
-    --ink: #ecebf5;
-    --ink-soft: #a6a3bb;
-    --rule: #34314a;
-    --accent: #a593ff;
-    --accent-soft: #2c2650;
-    --yes: #5fd39d;
-    --yes-soft: #163a2a;
-    --no: #ff8c9f;
-    --no-soft: #431d27;
-    --unknown: #f0bd5a;
-    --unknown-soft: #3d2f12;
-    color-scheme: dark;
-  }
+:root[data-theme='dark'] {
+  color-scheme: dark;
 }
 
 * {
@@ -73,22 +65,45 @@ footer {
 }
 
 .masthead {
-  padding-top: 48px;
+  padding-top: 20px;
   padding-bottom: 8px;
+}
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 28px;
+  padding-bottom: 14px;
+  margin-bottom: 28px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.wordmark {
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  text-decoration: none;
 }
 
 h1 {
   font-size: 2.6rem;
   line-height: 1.1;
   font-weight: 700;
-  letter-spacing: -0.02em;
-  margin: 0 0 8px;
+  letter-spacing: -0.025em;
+  margin: 0 0 10px;
 }
 
 .lede {
-  max-width: 62ch;
+  max-width: 60ch;
   color: var(--ink-soft);
   margin: 0 0 28px;
+}
+
+/* The title and intro introduce the tool on the start page only; other pages lead with their content. */
+body:not([data-page='home']) .hero {
+  display: none;
 }
 
 .lookup label {
@@ -101,6 +116,10 @@ h1 {
   display: flex;
   gap: 8px;
   max-width: 560px;
+}
+
+input:focus {
+  border-color: var(--accent);
 }
 
 input {
@@ -116,12 +135,17 @@ input {
 
 button {
   font: 600 0.95rem var(--sans);
+  transition: filter 0.15s;
   padding: 10px 18px;
   border-radius: 6px;
   border: 1px solid var(--accent);
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   cursor: pointer;
+}
+
+button:hover {
+  filter: brightness(1.08);
 }
 
 button.secondary {
@@ -211,9 +235,15 @@ h2 {
   border-bottom: 1px solid var(--rule);
 }
 
+/* The line's name as a transit line badge. */
 .line-name {
-  font: 500 0.95rem var(--mono);
-  padding-top: 2px;
+  align-self: start;
+  justify-self: start;
+  font: 600 0.85rem var(--mono);
+  padding: 2px 9px;
+  border-radius: 5px;
+  background: var(--ink);
+  color: var(--paper);
 }
 
 /* A rail is a timeline of the line's release points; the track between two points turns green
@@ -237,10 +267,10 @@ h2 {
 .rail .stop + .stop::before {
   content: '';
   position: absolute;
-  top: 8px;
+  top: 7px;
   right: 50%;
   width: 100%;
-  height: 2px;
+  height: 4px;
   background: var(--rule);
 }
 
@@ -264,8 +294,8 @@ h2 {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  border: 2px solid var(--ink-soft);
-  background: var(--paper);
+  border: 3px solid var(--ink-soft);
+  background: var(--surface);
 }
 
 /* rc dots are smaller but keep their center on the track. */
@@ -281,7 +311,7 @@ h2 {
 
 .stop.in .dot {
   border-color: var(--yes);
-  background: var(--yes);
+  background: var(--surface);
 }
 
 .stop.untagged.in .dot {
@@ -289,6 +319,7 @@ h2 {
 }
 
 .stop.first .dot {
+  background: var(--yes);
   box-shadow: 0 0 0 4px var(--yes-soft);
 }
 
@@ -522,21 +553,49 @@ tr.hidden {
 
 .nav {
   display: flex;
-  gap: 18px;
-  margin: 0 0 18px;
+  flex-wrap: wrap;
+  gap: 4px 20px;
   font-size: 0.92rem;
 }
 
 .nav a {
   color: var(--ink-soft);
   text-decoration: none;
-  padding-bottom: 2px;
+}
+
+.nav a:hover {
+  color: var(--ink);
 }
 
 .nav a[aria-current] {
   color: var(--ink);
   font-weight: 600;
-  border-bottom: 2px solid var(--accent);
+  text-decoration: underline 2px var(--accent);
+  text-underline-offset: 6px;
+}
+
+/* System / Light / Dark switch. */
+.theme {
+  display: inline-flex;
+  margin-left: auto;
+  padding: 2px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.theme button {
+  padding: 3px 11px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-soft);
+  font: 500 0.8rem var(--sans);
+}
+
+.theme button[aria-pressed='true'] {
+  background: var(--ink);
+  color: var(--paper);
 }
 
 footer {
@@ -552,7 +611,10 @@ footer {
     padding: 0 16px;
   }
   .masthead {
-    padding-top: 28px;
+    padding-top: 14px;
+  }
+  .theme {
+    margin-left: 0;
   }
   h1 {
     font-size: 2rem;
@@ -562,5 +624,11 @@ footer {
   }
   .lookup-row {
     flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
   }
 }

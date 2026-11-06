@@ -1,5 +1,5 @@
 import { parse as parseYaml } from 'yaml';
-import { openBackports as allOpenBackports, type OpenPr } from './backports';
+import { openBackports as allOpenBackports, type OpenPr, sdkReleases } from './backports';
 import { Http, SDK_REPO } from './http';
 import type {
   CrateShard,
@@ -8,7 +8,6 @@ import type {
   RuntimesRelease,
   SdkLine,
   SdkRelease,
-  SdkReleases,
 } from './types';
 
 export interface PrInfo {
@@ -147,7 +146,7 @@ export async function lookupPr(http: Http, number: number, progress: Progress = 
   const [touched, { merged: backports, open: openBackports }, releases, runtimes, live, allOpen] = await Promise.all([
     touchedCrates(http, number, pr.mergeSha),
     findBackports(http, number),
-    http.data<SdkReleases>('sdk-releases.json'),
+    sdkReleases(http),
     http.data<RuntimesRelease[]>('runtimes-releases.json'),
     http.data<LiveSpec[]>('live-specs.json'),
     allOpenBackports(http),

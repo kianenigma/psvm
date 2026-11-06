@@ -11,19 +11,31 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
+    <!-- Applies the saved theme before first paint (a file, not inline: the CSP allows only same-origin scripts). -->
+    <script src="./theme.js"></script>
   </head>
   <body>
     <header class="masthead">
-      <nav class="nav" aria-label="Pages">
-        <a href="#/">Trace a PR</a>
-        <a href="#/releases">Release lines and open backports</a>
-        <a href="#/runtimes">Fellowship runtimes</a>
-      </nav>
-      <h1>Where is my PR?</h1>
-      <p class="lede">
-        Trace a polkadot-sdk pull request to the releases that contain it, the first crate versions that ship it,
-        and the fellowship runtimes that lock those versions.
-      </p>
+      <div class="topbar">
+        <a class="wordmark" href="#/">Where is my PR?</a>
+        <nav class="nav" aria-label="Pages">
+          <a href="#/">Trace a PR</a>
+          <a href="#/releases">Release lines and open backports</a>
+          <a href="#/runtimes">Fellowship runtimes</a>
+        </nav>
+        <div class="theme" role="group" aria-label="Theme">
+          <button type="button" data-theme-choice="system">System</button>
+          <button type="button" data-theme-choice="light">Light</button>
+          <button type="button" data-theme-choice="dark">Dark</button>
+        </div>
+      </div>
+      <div class="hero">
+        <h1>Where is my PR?</h1>
+        <p class="lede">
+          Trace a polkadot-sdk pull request to the releases that contain it, the first crate versions that ship it,
+          and the fellowship runtimes that lock those versions.
+        </p>
+      </div>
       <div class="lookup">
         <form id="lookup" autocomplete="off">
           <label for="pr-input">polkadot-sdk PR</label>

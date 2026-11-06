@@ -1,6 +1,6 @@
-import { type CommitRange, commitRange, type OpenPr, openBackports } from './backports';
+import { type CommitRange, commitRange, type OpenPr, openBackports, sdkReleases } from './backports';
 import { type Http, RUNTIMES_REPO } from './http';
-import type { LiveSpec, RuntimesRelease, SdkRelease, SdkReleases } from './types';
+import type { LiveSpec, RuntimesRelease, SdkRelease } from './types';
 
 /** The polkadot-sdk release a runtimes release is built against, and what its line has since. */
 export interface RuntimesSdk {
@@ -50,7 +50,7 @@ export interface RuntimesOverview {
 export async function runtimesOverview(http: Http): Promise<RuntimesOverview> {
   const [runtimes, releases, live, open] = await Promise.all([
     http.data<RuntimesRelease[]>('runtimes-releases.json'),
-    http.data<SdkReleases>('sdk-releases.json'),
+    sdkReleases(http),
     http.data<LiveSpec[]>('live-specs.json'),
     openBackports(http),
   ]);

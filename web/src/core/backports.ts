@@ -108,14 +108,19 @@ export function compareLines(a: SdkLine, b: SdkLine): number {
   return mb - ma || Number(a.name.startsWith('unstable')) - Number(b.name.startsWith('unstable'));
 }
 
+/** `sdk-releases.json` with its lines sorted newest first (`compareLines`): every page reads it through this. */
+export async function sdkReleases(http: Http): Promise<SdkReleases | null> {
+  const releases = await http.data<SdkReleases>('sdk-releases.json');
+  return releases && { ...releases, lines: [...releases.lines].sort(compareLines) };
+}
+
 /** All release lines (newest `YYMM` first) with the open backports into each. */
 export async function releasesOverview(http: Http): Promise<{ lines: LineOverview[]; other: OpenPr[] }> {
-  const [releases, open] = await Promise.all([http.data<SdkReleases>('sdk-releases.json'), openBackports(http)]);
+  const [releases, open] = await Promise.all([sdkReleases(http), openBackports(http)]);
   if (!releases) throw new Error('Index files missing: run `psvm index --out web/public/data` first.');
   const names = new Set(releases.lines.map((l) => l.name));
-  const lines = [...releases.lines].sort(compareLines);
   return {
-    lines: lines.map((line) => ({ line, open: open.filter((pr) => pr.base === line.name) })),
+    lines: releases.lines.map((line) => ({ line, open: open.filter((pr) => pr.base === line.name) })),
     other: open.filter((pr) => !pr.base || !names.has(pr.base)),
   };
 }
@@ -234,7 +239,7 @@ export type ReleasePage =
 
 /** One release point: what it added since the previous one, and the open PRs into its branch it does not contain. */
 export async function releasePage(http: Http, id: string): Promise<ReleasePage> {
-  const releases = await http.data<SdkReleases>('sdk-releases.json');
+  const releases = await sdkReleases(http);
   if (!releases) throw new Error('Index files missing: run `psvm index --out web/public/data` first.');
   for (const line of releases.lines) {
     // An alias sits on both the last rc and the final release (same commit): pick the final.

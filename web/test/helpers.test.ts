@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compareLines, parseBackportTitle } from '../src/core/backports';
+import { compareLines, parseBackportTitle, sdkReleases } from '../src/core/backports';
 import { Http, RateLimitError } from '../src/core/http';
 import { crateOfFile, isBackportOf, parsePrInput } from '../src/core/lookup';
 import type { SdkLine } from '../src/core/types';
@@ -56,6 +56,16 @@ describe('helpers', () => {
       'stable6210',
       'stable1985',
     ]);
+  });
+
+  it('serves sdk-releases.json to every page with its lines sorted', async () => {
+    const lines = ['stable2603', 'stable2609', 'unstable2604', 'stable2606'].map((name) => ({
+      name,
+      hasBranch: true,
+      releases: [{ id: name, name, kind: 'tag', sha: '', date: `20${name.slice(-4, -2)}-${name.slice(-2)}-01`, rc: true }],
+    }));
+    const http = new Http(async () => new Response(JSON.stringify({ lines }), { headers: { 'content-type': 'application/json' } }), { dataBase: 'data/' });
+    expect((await sdkReleases(http))?.lines.map((l) => l.name)).toEqual(['stable2609', 'stable2606', 'unstable2604', 'stable2603']);
   });
 
   it('turns an exhausted rate limit into a RateLimitError', async () => {

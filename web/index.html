@@ -36,7 +36,8 @@
           <summary>GitHub token</summary>
           <p>
             Without a token GitHub allows 60 API calls per hour; a lookup takes about 5–30. A token raises that to 5,000.
-            It stays in this browser and is only sent to api.github.com. No scopes are needed.
+            Use a fine-grained token with no permissions (public data needs none), not your <code>gh auth token</code>.
+            It is kept for this tab only and is only sent to api.github.com.
           </p>
           <div class="lookup-row">
             <input id="token-input" type="password" placeholder="ghp_… or github_pat_…" />

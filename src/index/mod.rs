@@ -673,6 +673,11 @@ fn write_output(
     }
     std::fs::create_dir_all(&crates_dir)?;
     for (name, shard) in &shards {
+        // Names come from remote Plan.toml/Cargo.lock files and become file names: never let one escape `crates/`.
+        if !parse::is_valid_crate_name(name) {
+            log::warn!("skipping crate with invalid name {name:?}");
+            continue;
+        }
         std::fs::write(
             crates_dir.join(format!("{}.json", name)),
             serde_json::to_vec(shard)?,

@@ -33,28 +33,41 @@ const prInput = document.getElementById('pr-input') as HTMLInputElement;
 const tokenPanel = document.getElementById('token-panel') as HTMLDetailsElement;
 const tokenInput = document.getElementById('token-input') as HTMLInputElement;
 
-/** localStorage-backed cache; silently memory-only where storage is unavailable. */
+/**
+ * sessionStorage-backed store for the token and the compare cache; silently memory-only where storage is unavailable.
+ * Not localStorage: GitHub Pages serves every project site of an account from one origin, so other sites on it could
+ * read the token or forge cached results. sessionStorage is scoped to this tab.
+ */
 const storageKV: KV = {
   get(key) {
     try {
-      return localStorage.getItem(key);
+      return sessionStorage.getItem(key);
     } catch {
       return null;
     }
   },
   set(key, value) {
     try {
-      localStorage.setItem(key, value);
+      sessionStorage.setItem(key, value);
     } catch {
       // Storage full or blocked: results are only cached for this page view.
     }
   },
 };
 
+// Earlier versions kept the token and the compare cache in localStorage; remove them.
+try {
+  for (const key of Object.keys(localStorage)) {
+    if (key === TOKEN_KEY || key.startsWith('cmp:')) localStorage.removeItem(key);
+  }
+} catch {
+  // Storage blocked: nothing to clean up.
+}
+
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
-const date = (iso: string) => iso.slice(0, 10);
-const short = (sha: string) => sha.slice(0, 12);
+const date = (iso: string) => esc(iso.slice(0, 10));
+const short = (sha: string) => esc(sha.slice(0, 12));
 const link = (href: string, text: string, cls = '') =>
   `<a href="${esc(href)}" target="_blank" rel="noopener"${cls ? ` class="${cls}"` : ''}>${text}</a>`;
 
@@ -581,7 +594,12 @@ function route() {
   else if (hash === '#/releases')
     void show('Loading release lines and open backports…', (http) => releasesOverview(http), renderOverview, 'Release lines · Where is my PR?');
   else if (release) {
-    const id = decodeURIComponent(release[1]);
+    let id: string;
+    try {
+      id = decodeURIComponent(release[1]);
+    } catch {
+      id = release[1]; // Malformed escape (`%E0`): look it up as typed, which finds nothing.
+    }
     void show(`Loading ${id}…`, (http) => releasePage(http, id), renderReleasePage, `${id} · Where is my PR?`);
   } else
     app.innerHTML = `<p class="status">Enter a PR number, for example <a href="#/pr/12408">#12408</a> or <a href="#/pr/11910">#11910</a>, or browse <a href="#/releases">the release lines and their open backports</a>.</p>`;

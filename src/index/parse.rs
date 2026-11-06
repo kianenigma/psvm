@@ -251,9 +251,27 @@ pub fn parse_package_name(content: &str) -> Option<String> {
         .map(|p| p.name)
 }
 
+/// Whether `name` is a plain crate name (`[A-Za-z0-9_-]+`), as crates.io requires; safe to use as a file name.
+pub fn is_valid_crate_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_crate_names() {
+        assert!(is_valid_crate_name("pallet-asset-conversion"));
+        assert!(is_valid_crate_name("sp_core"));
+        assert!(!is_valid_crate_name(""));
+        assert!(!is_valid_crate_name("../x"));
+        assert!(!is_valid_crate_name("a/b"));
+        assert!(!is_valid_crate_name("a.b"));
+    }
 
     #[test]
     fn classifies_sdk_tags() {

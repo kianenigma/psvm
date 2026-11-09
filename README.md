@@ -78,10 +78,10 @@ How it works:
   `#/release/<tag>` shows the open and unpublished backports a single release is missing. The runtimes table names
   the polkadot-sdk release each runtimes release builds on, linked to that page, with its line's open and unpublished
   backport counts.
-- `#/unpublished` lists the backports merged into each line after its latest final release whose prdoc bumps a
-  published crate (from the index, plus those merged since it was built). Backports without one, such as CI changes,
-  need no release: polkadot-sdk's `check-semver` CI requires every crate a PR changes to be in its prdoc. `#/missed`
-  lists master PRs an older stable line released but a newer one has in no release.
+- `#/releases` also lists, per line, the backports merged after its latest final release whose prdoc bumps a
+  published crate, so not on crates.io yet (from the index, plus those merged since it was built). Backports without
+  one, such as CI changes, need no release: polkadot-sdk's `check-semver` CI requires every crate a PR changes to be in
+  its prdoc. `#/missed` lists master PRs an older stable line released but a newer one has in no release.
 
 Run it locally:
 

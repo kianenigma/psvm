@@ -734,6 +734,82 @@ footer {
   font-size: 0.85rem;
 }
 
+/* PR page: jump links to its sections. A row of links above them, or, where the window leaves room, a sticky sidebar
+   in the page's left margin, so the sections keep the full width. */
+.pr-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.pr-toc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin-top: 20px;
+  font-size: 0.92rem;
+}
+
+.pr-toc-title {
+  width: 100%;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.pr-toc a {
+  color: var(--ink-soft);
+  text-decoration: none;
+}
+
+.pr-toc a:hover {
+  color: var(--ink);
+}
+
+.pr-toc a[aria-current] {
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: underline 2px var(--accent);
+  text-underline-offset: 4px;
+}
+
+.pr-section {
+  scroll-margin-top: 12px;
+}
+
+/* `main` is 1120px wide: from 1520px on, its margin fits the 160px sidebar and 40px of space before the content. The
+   sidebar sits in a zero-width first column and is pulled into the margin, so it sticks beside every section. */
+@media (min-width: 1520px) {
+  .pr-layout {
+    grid-template-columns: 0 minmax(0, 1fr);
+  }
+  .pr-toc {
+    position: sticky;
+    top: 20px;
+    align-self: start;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    gap: 6px;
+    width: 160px;
+    margin: 40px 0 0 -200px;
+    padding-left: 12px;
+    border-left: 1px solid var(--rule);
+  }
+  .pr-toc-title {
+    width: auto;
+  }
+  .pr-toc a {
+    margin-left: -13px;
+    padding-left: 11px;
+    border-left: 2px solid transparent;
+  }
+  .pr-toc a[aria-current] {
+    border-left-color: var(--accent);
+    text-decoration: none;
+  }
+}
+
 @media (max-width: 640px) {
   .masthead,
   main,

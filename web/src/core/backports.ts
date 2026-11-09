@@ -193,6 +193,10 @@ export async function openPrsInto(http: Http, branch: string): Promise<OpenPr[]>
 export interface LineOverview {
   line: SdkLine;
   open: OpenPr[];
+  /** Backports merged after the line's latest final release that change a published crate: not on crates.io yet. */
+  unpublished: UnpublishedBackport[];
+  /** Backports merged after the line's latest final release that change no published crate, so need no release. */
+  silent: UnpublishedBackport[];
 }
 
 /**
@@ -236,13 +240,26 @@ export async function sdkReleases(http: Http): Promise<SdkReleases | null> {
   return releases && { ...releases, lines: [...releases.lines].sort(compareLines) };
 }
 
-/** All release lines (newest `YYMM` first) with the open backports into each. */
+/** All release lines (newest `YYMM` first) with the open and the unpublished backports into each. */
 export async function releasesOverview(http: Http): Promise<{ lines: LineOverview[]; other: OpenPr[] }> {
-  const [releases, open] = await Promise.all([sdkReleases(http), openBackports(http)]);
+  const releasesLoaded = sdkReleases(http);
+  const [releases, open, unpublished] = await Promise.all([
+    releasesLoaded,
+    openBackports(http),
+    releasesLoaded.then((r) => unpublishedBackports(http, r)),
+  ]);
   if (!releases) throw new Error('Index files missing: run `psvm index --out web/public/data` first.');
   const names = new Set(releases.lines.map((l) => l.name));
   return {
-    lines: releases.lines.map((line) => ({ line, open: open.filter((pr) => pr.base === line.name) })),
+    lines: releases.lines.map((line) => {
+      const merged = unpublished.get(line.name) ?? [];
+      return {
+        line,
+        open: open.filter((pr) => pr.base === line.name),
+        unpublished: merged.filter(publishesCrates),
+        silent: merged.filter((b) => !publishesCrates(b)),
+      };
+    }),
     other: open.filter((pr) => !pr.base || !names.has(pr.base)),
   };
 }
@@ -426,32 +443,4 @@ export async function missedPrs(http: Http): Promise<MissedRow[]> {
 /** The latest final release of `line`. */
 function latestFinal(releases: SdkReleases, line: string): SdkRelease | null {
   return releases.lines.find((l) => l.name === line)?.releases.filter((r) => !r.rc).at(-1) ?? null;
-}
-
-export interface UnpublishedOverviewLine {
-  line: SdkLine;
-  /** The latest final release, which the backports came after. */
-  latest: SdkRelease | null;
-  /** Those that change a published crate. */
-  backports: UnpublishedBackport[];
-  /** Those that change no published crate (no prdoc, e.g. CI changes), so need no release. */
-  silent: UnpublishedBackport[];
-}
-
-/** Every line with unpublished backports, newest line first. One API call (the merged backports search). */
-export async function unpublishedOverview(http: Http): Promise<UnpublishedOverviewLine[]> {
-  const releases = await sdkReleases(http);
-  if (!releases) throw new Error('Index files missing: run `psvm index --out web/public/data` first.');
-  const unpublished = await unpublishedBackports(http, releases);
-  return releases.lines
-    .filter((line) => unpublished.get(line.name)?.length)
-    .map((line) => {
-      const all = unpublished.get(line.name)!;
-      return {
-        line,
-        latest: latestFinal(releases, line.name),
-        backports: all.filter(publishesCrates),
-        silent: all.filter((b) => !publishesCrates(b)),
-      };
-    });
 }

@@ -11,8 +11,6 @@ import {
   type MissedRow,
   missedPrs,
   type UnpublishedBackport,
-  type UnpublishedOverviewLine,
-  unpublishedOverview,
 } from './core/backports';
 import { BadTokenError, Http, type KV, RateLimitError, RUNTIMES_REPO, SDK_REPO } from './core/http';
 import {
@@ -447,32 +445,42 @@ function renderRuntimes(report: Merged): string {
 
 // --- Release pages -----------------------------------------------------------------------------
 
-function renderOverviewLine({ line, open }: LineOverview): string {
+function renderOverviewLine({ line, open, unpublished, silent }: LineOverview): string {
   const latest = line.releases.at(-1);
-  const summary = open.length
-    ? `<div class="pending"><strong>${open.length === 1 ? '1 open backport' : `${open.length} open backports`}</strong> into <code>${esc(line.name)}</code>: no release of this line has ${open.length === 1 ? 'it' : 'them'} yet.<ul class="prs">${open.map((pr) => renderOpenPr(pr, { showOriginal: true })).join('')}</ul></div>`
-    : `<p class="line-summary muted">No open backports into <code>${esc(line.name)}</code>.</p>`;
+  const latestFinal = line.releases.filter((r) => !r.rc).at(-1);
+  const openBlock = open.length
+    ? `<div class="pending"><strong>${open.length === 1 ? '1 open backport' : `${open.length} open backports`}</strong> into <code>${esc(line.name)}</code>: not merged yet, so no release of this line has ${open.length === 1 ? 'it' : 'them'}.<ul class="prs">${open.map((pr) => renderOpenPr(pr, { showOriginal: true })).join('')}</ul></div>`
+    : '';
+  const unpublishedBlock = unpublished.length
+    ? `<div class="pending"><strong>${unpublished.length === 1 ? '1 unpublished backport' : `${unpublished.length} unpublished backports`}</strong>: merged into <code>${esc(line.name)}</code> after ${latestFinal ? releaseLink(latestFinal) : 'its branch-off'}, so not on crates.io yet. ${unpublished.length === 1 ? 'It ships' : 'They ship'} with the line's next release.<ul class="prs">${unpublished.map((b) => renderUnpublishedPr(b)).join('')}</ul></div>`
+    : '';
+  const none = open.length || unpublished.length ? '' : `<p class="line-summary muted">No open or unpublished backports into <code>${esc(line.name)}</code>.</p>`;
+  const silentBlock = silent.length
+    ? `<details><summary>${silent.length === 1 ? '1 more merged backport changes' : `${silent.length} more merged backports change`} no published crate, so ${silent.length === 1 ? 'needs' : 'need'} no release</summary><ul class="prs">${silent.map((b) => renderUnpublishedPr(b)).join('')}</ul></details>`
+    : '';
+  const badges = `${open.length ? `<span class="badge">${open.length} open</span>` : ''}${unpublished.length ? `<span class="badge">${unpublished.length} unpublished</span>` : ''}`;
   return `<div class="line">
-    <div class="line-head"><span class="line-name">${esc(line.name)}</span>${open.length ? `<span class="badge">${open.length} open</span>` : ''}</div>
+    <div class="line-head"><span class="line-name">${esc(line.name)}</span>${badges}</div>
     <div>
       ${renderRail(line)}
       ${latest ? `<p class="line-summary">Latest: ${releaseLink(latest)} <span class="muted">${date(latest.date)}</span></p>` : ''}
-      ${summary}
+      ${openBlock}${unpublishedBlock}${none}${silentBlock}
     </div>
   </div>`;
 }
 
 function renderOverview({ lines, other }: { lines: LineOverview[]; other: OpenPr[] }): string {
   const total = lines.reduce((n, l) => n + l.open.length, 0);
+  const unpublished = lines.reduce((n, l) => n + l.unpublished.length, 0);
   const otherBlock = other.length
     ? `<section><h2>Open backports into other branches</h2><ul class="prs">${other.map((pr) => renderOpenPr(pr, { showTarget: true, showOriginal: true })).join('')}</ul></section>`
     : '';
   return `<div class="pr-head">
       <h2>Release lines</h2>
-      <div class="facts"><span>${lines.length} lines</span><span>${total} open backports</span></div>
+      <div class="facts"><span>${lines.length} lines</span><span>${total} open backports</span><span>${unpublished} unpublished backports</span></div>
     </div>
     <section>
-      <p class="section-note">Backports are merged into a line's branch and ship with its next release. An open backport is missing from every release of its line so far. Click a release to see its details. Numbers on the track count the commits between two releases.</p>
+      <p class="section-note">Backports are merged into a line's branch and ship with its next release. An open backport is missing from every release of its line so far. An unpublished one is merged but in no final release yet, so not on crates.io: only backports whose prdoc bumps a published crate count, since CI requires every crate a PR changes to be in its prdoc. Those marked <span class="badge">new</span> were merged after the index was built. Click a release to see its details. Numbers on the track count the commits between two releases.</p>
       ${RC_TOGGLE}
       <div class="lines">${lines.map(renderOverviewLine).join('')}</div>
     </section>${otherBlock}`;
@@ -802,41 +810,6 @@ function renderWestendPage({ runtimes, commits }: { runtimes: WestendRuntime[]; 
     </section>${sections}`;
 }
 
-// --- Unpublished backports ---------------------------------------------------------------------
-
-function renderUnpublishedPage(lines: UnpublishedOverviewLine[]): string {
-  const total = lines.reduce((n, l) => n + l.backports.length, 0);
-  const silent = lines.reduce((n, l) => n + l.silent.length, 0);
-  if (!total && !silent) {
-    return `<div class="pr-head"><h2>Unpublished backports</h2></div><p class="status">Every backport merged into a release line is in a final release of it.</p>`;
-  }
-  const body = lines
-    .map(({ line, latest, backports, silent }) => {
-      const list = backports.length
-        ? `<ul class="prs">${backports.map((b) => renderUnpublishedPr(b)).join('')}</ul>`
-        : `<p class="line-summary muted">None changes a published crate.</p>`;
-      const quiet = silent.length
-        ? `<details><summary>${silent.length === 1 ? '1 backport changes' : `${silent.length} backports change`} no published crate</summary><ul class="prs">${silent.map((b) => renderUnpublishedPr(b)).join('')}</ul></details>`
-        : '';
-      return `<div class="line">
-        <div class="line-head"><span class="line-name">${esc(line.name)}</span>${backports.length ? `<span class="badge">${backports.length} unpublished</span>` : ''}</div>
-        <div>
-          <p class="line-summary">${latest ? `Merged after ${releaseLink(latest)} <span class="muted">${date(latest.date)}</span>, the latest final release.` : 'No final release yet.'}</p>
-          ${list}${quiet}
-        </div>
-      </div>`;
-    })
-    .join('');
-  return `<div class="pr-head">
-      <h2>Unpublished backports</h2>
-      <div class="facts"><span>${total} backport${total === 1 ? '' : 's'}</span><span>${lines.filter((l) => l.backports.length).length} lines</span>${silent ? `<span>${silent} more change no published crate</span>` : ''}</div>
-    </div>
-    <section>
-      <p class="section-note">Backports merged into a release line's branch after its latest final release that bump a published crate in their prdoc. They ship with the line's next release; until then, no crates.io version of the line has them. Backports without such a prdoc (CI, docs, tests) need no release and are folded away: CI requires every crate a PR changes to be in its prdoc. Those marked <span class="badge">new</span> were merged after the index was built and found live.</p>
-      <div class="lines">${body}</div>
-    </section>`;
-}
-
 // --- Page --------------------------------------------------------------------------------------
 
 function renderReport(report: Report): string {
@@ -856,8 +829,43 @@ function renderReport(report: Report): string {
   if (report.status === 'not-merged') {
     return `${head}<p class="status">This PR is not merged, so no release contains it yet.</p>`;
   }
-  return `${head}${renderWestendForPr(report)}${renderLines(report)}${renderCrates(report)}${renderRuntimes(report)}`;
+  const sections = [
+    { id: 'pr-releases', label: 'Releases', html: renderLines(report) },
+    { id: 'pr-crates', label: 'Crates', html: renderCrates(report) },
+    { id: 'pr-runtimes', label: 'Fellowship runtimes', html: renderRuntimes(report) },
+    { id: 'pr-westend', label: 'Westend', html: renderWestendForPr(report) },
+  ].filter((s) => s.html);
+  // Jump links scroll with a click handler (see `show`): a plain `#id` would be taken for a route.
+  const toc = sections.map((s) => `<a href="#/pr/${pr.number}" data-jump="${s.id}">${s.label}</a>`).join('');
+  return `${head}<div class="pr-layout">
+    <nav class="pr-toc" aria-label="On this page"><span class="pr-toc-title">On this page</span>${toc}</nav>
+    <div>${sections.map((s) => `<div class="pr-section" id="${s.id}">${s.html}</div>`).join('')}</div>
+  </div>`;
 }
+
+/** Marks the sidebar link of the PR page section at the top of the viewport (the last one at the page's end). */
+function markCurrentSection() {
+  const links = [...app.querySelectorAll<HTMLAnchorElement>('a[data-jump]')];
+  if (!links.length) return;
+  const atEnd = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+  let current = links[0].dataset.jump;
+  for (const a of links) {
+    const top = document.getElementById(a.dataset.jump!)?.getBoundingClientRect().top;
+    if (top !== undefined && top <= 120) current = a.dataset.jump;
+  }
+  if (atEnd) current = links.at(-1)!.dataset.jump;
+  links.forEach((a) => a.toggleAttribute('aria-current', a.dataset.jump === current));
+}
+
+let sectionFrame = 0;
+window.addEventListener(
+  'scroll',
+  () => {
+    cancelAnimationFrame(sectionFrame);
+    sectionFrame = requestAnimationFrame(markCurrentSection);
+  },
+  { passive: true },
+);
 
 function status(message: string, error = false) {
   app.innerHTML = `<p class="status${error ? ' error' : ''}">${message}</p>`;
@@ -876,6 +884,14 @@ async function show<T>(loading: string, load: (http: Http, progress: (m: string)
     if (id !== current) return;
     app.innerHTML = render(data);
     document.title = title;
+    app.querySelectorAll<HTMLAnchorElement>('a[data-jump]').forEach((a) =>
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        document.getElementById(a.dataset.jump!)?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
+      }),
+    );
+    markCurrentSection();
     app.querySelectorAll<HTMLButtonElement>('button[data-reveal]').forEach((button) =>
       button.addEventListener('click', () => {
         app.querySelectorAll(button.dataset.reveal!).forEach((el) => el.classList.remove('hidden'));
@@ -909,7 +925,7 @@ function renderFooter() {
 }
 
 /** Pages other than the PR trace; the PR field and the "Trace a PR" highlight belong to the trace pages only. */
-const OTHER_PAGES = /^#\/(release|runtimes|pending|missed|westend|unpublished)/;
+const OTHER_PAGES = /^#\/(release|runtimes|pending|missed|westend)/;
 
 function markNav(hash: string) {
   document.querySelectorAll<HTMLAnchorElement>('.nav a').forEach((a) => {
@@ -933,8 +949,6 @@ function route() {
     void show('Loading Westend…', (http) => westendOverview(http), renderWestendPage, 'Westend · Where is my PR?');
   else if (hash === '#/missed')
     void show('Loading missed backports…', (http) => missedPrs(http), renderMissedPage, 'Missed backports · Where is my PR?');
-  else if (hash === '#/unpublished')
-    void show('Loading unpublished backports…', (http) => unpublishedOverview(http), renderUnpublishedPage, 'Unpublished backports · Where is my PR?');
   else if (pending) {
     const number = Number(pending[1]);
     void show(`Loading pending release #${number}…`, (http) => pendingReleasePage(http, number), renderPendingPage, `Pending release #${number} · Where is my PR?`);
@@ -942,7 +956,7 @@ function route() {
   else if (hash === '#/runtimes')
     void show('Loading fellowship runtimes…', (http) => runtimesOverview(http), renderRuntimesPage, 'Fellowship runtimes · Where is my PR?');
   else if (hash === '#/releases')
-    void show('Loading release lines and open backports…', (http) => releasesOverview(http), renderOverview, 'Release lines · Where is my PR?');
+    void show('Loading release lines and backports…', (http) => releasesOverview(http), renderOverview, 'Release lines · Where is my PR?');
   else if (release) {
     let id: string;
     try {

@@ -1,5 +1,6 @@
 import { parse as parseYaml } from 'yaml';
 import { openBackports as allOpenBackports, type OpenPr, sdkReleases } from './backports';
+import { type WestendRow, westendForPr } from './westend';
 import { Http, SDK_REPO } from './http';
 import type {
   CrateShard,
@@ -96,6 +97,7 @@ export type Report =
       lines: LineResult[];
       crateVersions: Record<string, CrateLineVersion[]>;
       runtimes: RuntimesRow[];
+      westend: WestendRow[];
       apiCalls: number;
     };
 
@@ -193,6 +195,7 @@ export async function lookupPr(http: Http, number: number, progress: Progress = 
     lines,
     crateVersions,
     runtimes: runtimesRows,
+    westend: await westendForPr(http, fixes),
     apiCalls: http.apiCalls,
   };
 }

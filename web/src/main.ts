@@ -29,7 +29,8 @@ import {
   runtimesOverview,
   type SdkPoint,
 } from './core/runtimes';
-import type { LiveSpec, Meta, PendingRelease, RuntimesRelease, SdkLine, SdkRelease } from './core/types';
+import type { LiveSpec, Meta, PendingRelease, RuntimesRelease, SdkLine, SdkRelease, WestendRuntime } from './core/types';
+import { type WestendCommit, westendOverview } from './core/westend';
 
 type Merged = Extract<Report, { status: 'merged' }>;
 
@@ -654,6 +655,81 @@ function renderMissedPage(rows: MissedRow[]): string {
     </section>`;
 }
 
+// --- Westend -----------------------------------------------------------------------------------
+
+/** Subscan host of each Westend chain, for block and extrinsic links. */
+const SUBSCAN: Record<string, string> = {
+  Westend: 'westend',
+  'Westend Asset Hub': 'assethub-westend',
+  'Westend Bridge Hub': 'bridgehub-westend',
+  'Westend Collectives': 'collectives-westend',
+  'Westend Coretime': 'coretime-westend',
+  'Westend People': 'people-westend',
+};
+const subscan = (chain: string, path: string) => `https://${SUBSCAN[chain] ?? 'westend'}.subscan.io/${path}`;
+
+function renderWestendSince(r: WestendRuntime): string {
+  if (!r.since) return '<span class="muted">before the indexed window</span>';
+  // From the chain: its first block on this runtime. From Subscan: the relay extrinsic that authorized it.
+  const where = r.sinceBlock
+    ? link(subscan(r.chain, `block/${r.sinceBlock}`), `block ${r.sinceBlock}`)
+    : r.extrinsic
+      ? `authorized in ${link(subscan('Westend', `extrinsic/${r.extrinsic}`), r.extrinsic)}`
+      : '';
+  return `${date(r.since)}<span class="sub">${where}</span>`;
+}
+
+function renderWestendCommit(r: WestendRuntime): string {
+  if (!r.commit) return '<span class="muted">not recorded on chain</span>';
+  const remark = r.extrinsic ? `<span class="sub">remarked in ${link(subscan('Westend', `extrinsic/${r.extrinsic}`), r.extrinsic)}</span>` : '';
+  return `${link(`https://github.com/${SDK_REPO}/commit/${r.commit}`, `<code>${short(r.commit)}</code>`)}${remark}`;
+}
+
+function renderWestendForPr(report: Merged): string {
+  if (!report.westend.length) return '';
+  const marks = { contains: '✓', missing: '✗', unknown: '?' } as const;
+  const rows = report.westend
+    .map(({ runtime: r, verdict, reason }) => {
+      const cell = `<span class="verdict ${verdict === 'contains' ? 'contains' : verdict}" title="${esc(reason)}"><span class="mark" aria-hidden="true">${marks[verdict]}</span>${verdict === 'contains' ? 'on Westend' : verdict === 'missing' ? 'not yet' : 'unknown'}</span><span class="sub">${esc(reason)}</span>`;
+      return `<tr><td>${esc(r.chain)}<span class="sub"><code>${specVersion(r.specVersion)}</code></span></td><td>${cell}</td><td>${renderWestendCommit(r)}</td></tr>`;
+    })
+    .join('');
+  return `<section>
+    <h2>Westend</h2>
+    <p class="section-note">Whether each Westend chain runs the change, from the polkadot-sdk commit remarked on chain with its last upgrade. ${pageLink('#/westend', 'What Westend runs')}.</p>
+    <div class="table-wrap"><table><tr><th>Chain</th><th>This PR</th><th>Built from</th></tr>${rows}</table></div>
+  </section>`;
+}
+
+function renderWestendPage({ runtimes, commits }: { runtimes: WestendRuntime[]; commits: WestendCommit[] }): string {
+  if (!runtimes.length) return `<p class="status">No Westend data in the index (it was built with <code>--no-live</code>, or every RPC failed).</p>`;
+  const rows = runtimes
+    .map((r) => `<tr><td>${esc(r.chain)}<span class="sub"><code>${esc(r.specName)}</code></span></td><td><code>${specVersion(r.specVersion)}</code></td><td>${renderWestendSince(r)}</td><td>${renderWestendCommit(r)}</td></tr>`)
+    .join('');
+  const sections = commits
+    .map((c) => {
+      const chains = runtimes.filter((r) => r.commit === c.sha).map((r) => esc(r.chain)).join(', ');
+      const behind = c.behind.total
+        ? `<p class="section-note">${c.behind.total === 1 ? '1 master commit' : `${c.behind.total} master commits`} since, not on these chains yet.</p>${renderCommits(c.behind)}`
+        : `<p class="status">Up to date with <code>master</code>.</p>`;
+      return `<section>
+        <h2>${link(`https://github.com/${SDK_REPO}/commit/${c.sha}`, `<code>${short(c.sha)}</code>`)} ${esc(c.title)}</h2>
+        <p class="section-note">Committed ${date(c.date)}; run by ${chains}.</p>
+        ${behind}
+      </section>`;
+    })
+    .join('');
+  const unknown = runtimes.filter((r) => !r.commit).length;
+  return `<div class="pr-head">
+      <h2>Westend</h2>
+      <div class="facts"><span>${runtimes.length} chains</span><span>${commits.length === 1 ? '1 commit' : `${commits.length} commits`} recorded</span>${unknown ? `<span>${unknown} upgraded without a commit remark</span>` : ''}</div>
+    </div>
+    <section>
+      <p class="section-note">Westend is upgraded by <code>paritytech/substrate-runtime-upgrade</code>, which batches <code>system.remark_with_event(&lt;polkadot-sdk commit&gt;)</code> with the sudo upgrade on the relay chain. The indexer finds each chain's last upgrade and reads that remark. Upgrades made without it, like a plain <code>sudo(system.set_code)</code>, record no commit.</p>
+      <div class="table-wrap"><table><tr><th>Chain</th><th>Spec version</th><th>Live since</th><th>Built from</th></tr>${rows}</table></div>
+    </section>${sections}`;
+}
+
 // --- Page --------------------------------------------------------------------------------------
 
 function renderReport(report: Report): string {
@@ -673,7 +749,7 @@ function renderReport(report: Report): string {
   if (report.status === 'not-merged') {
     return `${head}<p class="status">This PR is not merged, so no release contains it yet.</p>`;
   }
-  return `${head}${renderLines(report)}${renderCrates(report)}${renderRuntimes(report)}`;
+  return `${head}${renderWestendForPr(report)}${renderLines(report)}${renderCrates(report)}${renderRuntimes(report)}`;
 }
 
 function status(message: string, error = false) {
@@ -724,7 +800,7 @@ function renderFooter() {
 }
 
 /** Pages other than the PR trace; the PR field and the "Trace a PR" highlight belong to the trace pages only. */
-const OTHER_PAGES = /^#\/(release|runtimes|pending|missed)/;
+const OTHER_PAGES = /^#\/(release|runtimes|pending|missed|westend)/;
 
 function markNav(hash: string) {
   document.querySelectorAll<HTMLAnchorElement>('.nav a').forEach((a) => {
@@ -744,6 +820,8 @@ function route() {
   const release = hash.match(/^#\/release\/(.+)$/);
   const pending = hash.match(/^#\/pending\/(\d+)$/);
   if (pr) run(Number(pr[1]));
+  else if (hash === '#/westend')
+    void show('Loading Westend…', (http) => westendOverview(http), renderWestendPage, 'Westend · Where is my PR?');
   else if (hash === '#/missed')
     void show('Loading missed backports…', (http) => missedPrs(http), renderMissedPage, 'Missed backports · Where is my PR?');
   else if (pending) {

@@ -30,6 +30,7 @@
 mod github;
 mod missed;
 pub mod parse;
+mod westend;
 
 use crate::versions::{get_parity_crate_owner_crates, get_version_mapping_at_ref, MappingSource};
 use futures::{stream, StreamExt, TryStreamExt};
@@ -282,6 +283,14 @@ pub async fn run(options: IndexOptions) -> Result<(), Error> {
     let pending = pending_releases(&gh, &cache).await?;
     let mentioned = missed::mentioned_prs(&gh, &cache, &missed::mentioned_numbers(&lines)).await?;
     let missed = missed::missed_prs(&lines, &mentioned);
+    let westend = if options.live {
+        let subscan_key = std::env::var("SUBSCAN_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty());
+        westend::westend(&gh, &cache, subscan_key.as_deref()).await
+    } else {
+        vec![]
+    };
     let live = if options.live {
         live_specs(&gh, &runtimes).await
     } else {
@@ -297,6 +306,7 @@ pub async fn run(options: IndexOptions) -> Result<(), Error> {
         &live,
         &pending,
         &missed,
+        &westend,
     )
 }
 
@@ -781,6 +791,7 @@ fn write_output(
     live: &[LiveSpec],
     pending: &[PendingRelease],
     missed: &[missed::MissedPr],
+    westend: &[westend::WestendRuntime],
 ) -> Result<(), Error> {
     let mut shards: BTreeMap<&str, CrateShard> = BTreeMap::new();
     let mut origin_ranks: HashMap<(&str, &str), (bool, bool, &str)> = HashMap::new();
@@ -876,6 +887,7 @@ fn write_output(
     write("live-specs.json", serde_json::to_value(live)?)?;
     write("pending-releases.json", serde_json::to_value(&pending_out)?)?;
     write("missed-prs.json", serde_json::to_value(missed)?)?;
+    write("westend.json", serde_json::to_value(westend)?)?;
     write(
         "meta.json",
         serde_json::json!({
@@ -1048,6 +1060,7 @@ mod tests {
             &mappings,
             &runtimes,
             &BTreeMap::new(),
+            &[],
             &[],
             &[],
             &[],

@@ -248,6 +248,81 @@ query($owner: String!, $name: String!, $cursor: String) {
     }
 
     /// `state_getRuntimeVersion` of a chain via its public JSON-RPC HTTP endpoint.
+    /// A JSON-RPC call to a node's HTTP endpoint, returning `result`. Public RPCs sit behind Cloudflare, which answers
+    /// bursts with an HTML challenge instead of JSON: those are retried after a pause.
+    pub async fn rpc(&self, url: &str, method: &str, params: Value) -> Result<Value, Error> {
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+        for attempt in 0..5 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let sent = self
+                .client
+                .post(url)
+                .timeout(Duration::from_secs(30))
+                .json(&body)
+                .send()
+                .await;
+            let text = match sent {
+                Ok(response) => response.text().await.unwrap_or_default(),
+                // Connection resets happen on the public RPCs; retry like a rate limit.
+                Err(e) if attempt < 4 => {
+                    log::debug!("{} {} failed (attempt {}): {}", url, method, attempt, e);
+                    String::new()
+                }
+                Err(e) => return Err(e.into()),
+            };
+            if let Ok(mut value) = serde_json::from_str::<Value>(&text) {
+                if let Some(error) = value.get("error") {
+                    return Err(format!("{} {}: {}", url, method, error).into());
+                }
+                return Ok(value["result"].take());
+            }
+            log::debug!(
+                "{} answered {} with no JSON (attempt {}), waiting",
+                url,
+                method,
+                attempt
+            );
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        }
+        Err(format!("{} {}: no JSON answer after retries", url, method).into())
+    }
+
+    /// `POST` to the Subscan API with its key (never the GitHub token), returning `data`. Retries 429s and server
+    /// errors; the free tier allows a few requests per second.
+    pub async fn subscan(
+        &self,
+        host: &str,
+        path: &str,
+        key: &str,
+        body: Value,
+    ) -> Result<Value, Error> {
+        let url = format!("https://{}.api.subscan.io{}", host, path);
+        for attempt in 1..=4u32 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let response = self
+                .client
+                .post(&url)
+                .header("X-API-Key", key)
+                .timeout(Duration::from_secs(30))
+                .json(&body)
+                .send()
+                .await?;
+            let status = response.status();
+            if (status.is_server_error() || status.as_u16() == 429) && attempt < 4 {
+                tokio::time::sleep(Duration::from_secs(2u64.pow(attempt))).await;
+                continue;
+            }
+            let mut value: Value = response.error_for_status()?.json().await?;
+            if value["code"].as_i64() != Some(0) {
+                return Err(
+                    format!("Subscan {}: {} {}", path, value["code"], value["message"]).into(),
+                );
+            }
+            return Ok(value["data"].take());
+        }
+        Err(format!("Subscan {}: no answer after retries", path).into())
+    }
+
     pub async fn runtime_version(&self, rpc: &str) -> Result<(String, u32), Error> {
         let body = json!({
             "jsonrpc": "2.0", "id": 1, "method": "state_getRuntimeVersion", "params": []

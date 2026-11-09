@@ -34,6 +34,8 @@ check(latest?.sdkRelease, `latest runtimes release ${latest?.name} matches no po
 
 check(Array.isArray(read('pending-releases.json')), 'pending-releases.json is not a list');
 check(Array.isArray(read('missed-prs.json')), 'missed-prs.json is not a list');
+// Empty if every Westend RPC failed (or --no-live): the site then omits Westend rather than not deploying.
+check(Array.isArray(read('westend.json')), 'westend.json is not a list');
 
 // RPCs fail independently; an empty file means all of them did (or the index ran with --no-live).
 check(read('live-specs.json').length > 0, 'live-specs.json is empty');

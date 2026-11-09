@@ -46,6 +46,8 @@ jobs:
         run: cargo run --locked --release -- index --out web/public/data --cache-dir target/psvm-index-cache
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: finds Westend upgrades from Subscan instead of searching the chain (see src/index/westend.rs).
+          SUBSCAN_API_KEY: ${{ secrets.SUBSCAN_API_KEY }}
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:

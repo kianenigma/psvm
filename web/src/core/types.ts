@@ -88,6 +88,21 @@ export interface MissedPr {
   missing: string[];
 }
 
+/** The runtime a Westend chain runs (see `src/index/westend.rs`). */
+export interface WestendRuntime {
+  chain: string;
+  rpc: string;
+  specName: string;
+  specVersion: number;
+  /** First block running this spec version, and its time; absent if older than the indexer's search window. */
+  sinceBlock?: number | null;
+  since?: string | null;
+  /** The polkadot-sdk commit remarked on chain with the upgrade; absent for upgrades without a remark. */
+  commit?: string | null;
+  /** The relay chain extrinsic (`block-index`) carrying the remark. */
+  extrinsic?: string | null;
+}
+
 export interface Meta {
   generatedAt: number;
   psvmVersion: string;

@@ -1,5 +1,13 @@
-import { parse as parseYaml } from 'yaml';
-import { openBackports as allOpenBackports, type OpenPr, sdkReleases } from './backports';
+import {
+  openBackports as allOpenBackports,
+  type OpenPr,
+  sdkReleases,
+  type UnpublishedBackport,
+  unpublishedBackports,
+  type Unpublished,
+  unpublishedInto,
+} from './backports';
+import { parsePrdocCrates } from './prdoc';
 import { type WestendRow, westendForPr } from './westend';
 import { Http, SDK_REPO } from './http';
 import type {
@@ -48,6 +56,27 @@ export interface LineResult {
   checks: ContainmentCheck[];
 }
 
+/**
+ * Where a line stands with the change. `released`: a final release has it. `unpublished`: its branch has it, through a
+ * merged backport or in an rc, but no final release does, so the line's crates on crates.io lack it. `open`: only an open
+ * backport would bring it. `none`: nothing does.
+ */
+export type LineState =
+  | { kind: 'released' }
+  | { kind: 'unpublished'; backport: FixCommit | null; rc: SdkRelease | null }
+  | { kind: 'open' }
+  | { kind: 'none' };
+
+export function lineState(result: LineResult, fixes: FixCommit[], open: OpenPr[]): LineState {
+  const { line, firstIndex } = result;
+  if (firstIndex !== null && line.releases.slice(firstIndex).some((r) => !r.rc)) return { kind: 'released' };
+  const backport = result.via?.backport ? result.via : (fixes.find((f) => f.backport && f.base === line.name) ?? null);
+  if (firstIndex !== null || backport) {
+    return { kind: 'unpublished', backport, rc: firstIndex === null ? null : line.releases[firstIndex] };
+  }
+  return open.some((pr) => pr.base === line.name) ? { kind: 'open' } : { kind: 'none' };
+}
+
 export interface TouchedCrate {
   name: string;
   bump?: string;
@@ -76,8 +105,15 @@ export interface LockVerdict {
 
 export interface RuntimesRow {
   release: RuntimesRelease;
-  /** The polkadot-sdk release it is built against, and the open backports into its line. */
-  sdk: { release: SdkRelease; line: string; matched: number; total: number; openBackports: OpenPr[] } | null;
+  /** The polkadot-sdk release it is built against, and the open and unpublished backports into its line. */
+  sdk: {
+    release: SdkRelease;
+    line: string;
+    matched: number;
+    total: number;
+    openBackports: OpenPr[];
+    unpublished: UnpublishedBackport[];
+  } | null;
   live: LiveSpec[];
   /** Crate name -> verdicts (empty if the crate is not locked by this release). */
   cells: Record<string, LockVerdict[]>;
@@ -145,14 +181,17 @@ export async function lookupPr(http: Http, number: number, progress: Progress = 
 
   const original: FixCommit = { sha: pr.mergeSha, mergedAt: pr.mergedAt, base: pr.base };
   progress('Reading prdoc, searching backports, loading index');
-  const [touched, { merged: backports, open: openBackports }, releases, runtimes, live, allOpen] = await Promise.all([
-    touchedCrates(http, number, pr.mergeSha),
-    findBackports(http, number),
-    sdkReleases(http),
-    http.data<RuntimesRelease[]>('runtimes-releases.json'),
-    http.data<LiveSpec[]>('live-specs.json'),
-    allOpenBackports(http),
-  ]);
+  const releasesLoaded = sdkReleases(http);
+  const [touched, { merged: backports, open: openBackports }, releases, runtimes, live, allOpen, unpublished] =
+    await Promise.all([
+      touchedCrates(http, number, pr.mergeSha),
+      findBackports(http, number),
+      releasesLoaded,
+      http.data<RuntimesRelease[]>('runtimes-releases.json'),
+      http.data<LiveSpec[]>('live-specs.json'),
+      allOpenBackports(http),
+      releasesLoaded.then((r) => unpublishedBackports(http, r)),
+    ]);
   if (!releases || !runtimes) {
     throw new Error('Index files missing: run `psvm index --out web/public/data` first.');
   }
@@ -175,7 +214,7 @@ export async function lookupPr(http: Http, number: number, progress: Progress = 
   const lineOf = new Map(lines.flatMap((l) => l.line.releases.map((r) => [r.id, l.line.name] as const)));
   const runtimesRows = runtimes.map((release) => ({
     release,
-    sdk: sdkOf(release, releaseIndex, lineOf, allOpen),
+    sdk: sdkOf(release, releaseIndex, lineOf, allOpen, unpublished),
     live: (live ?? []).filter((spec) => spec.releases.includes(release.name)),
     cells: Object.fromEntries(
       crates.map((c) => [
@@ -205,12 +244,19 @@ function sdkOf(
   releases: Map<string, IndexedRelease>,
   lineOf: Map<string, string>,
   open: OpenPr[],
+  unpublished: Unpublished,
 ): RuntimesRow['sdk'] {
   const match = release.sdkRelease;
   const sdk = match && releases.get(match.id);
   const line = match && lineOf.get(match.id);
   if (!match || !sdk || !line) return null;
-  return { ...match, release: sdk.release, line, openBackports: open.filter((pr) => pr.base === line) };
+  return {
+    ...match,
+    release: sdk.release,
+    line,
+    openBackports: open.filter((pr) => pr.base === line),
+    unpublished: unpublishedInto(unpublished, line),
+  };
 }
 
 /** Crates of the PR's prdoc at the merge commit, falling back to the crates of the changed files. */
@@ -221,8 +267,7 @@ async function touchedCrates(
 ): Promise<{ crates: { name: string; bump?: string }[]; source: 'prdoc' | 'files' }> {
   const prdoc = await http.raw(SDK_REPO, mergeSha, `prdoc/pr_${number}.prdoc`);
   if (prdoc) {
-    const doc = parseYaml(prdoc) as { crates?: { name: string; bump?: string }[] } | null;
-    const crates = (doc?.crates ?? []).filter((c) => c?.name).map((c) => ({ name: c.name, bump: c.bump }));
+    const crates = parsePrdocCrates(prdoc);
     if (crates.length) return { crates, source: 'prdoc' };
   }
 

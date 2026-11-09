@@ -84,7 +84,7 @@ export interface MissedPr {
   mergedAt: string;
   /** Older lines, with the id of the first release of each that has it. */
   released: { line: string; release: string }[];
-  /** Newer lines with no release or branch commit that has it. */
+  /** Newer lines with no final release that has it. Their branch may have a backport of it that is not released yet. */
   missing: string[];
 }
 
@@ -101,6 +101,25 @@ export interface WestendRuntime {
   commit?: string | null;
   /** The relay chain extrinsic (`block-index`) carrying the remark. */
   extrinsic?: string | null;
+}
+
+/** `unpublished-backports.json`: per line with a branch, the backports merged into it after its latest final release. */
+export interface UnpublishedLine {
+  line: string;
+  /** Id of the line's latest final release, which the backports came after; `null` if it has none yet. */
+  after: string | null;
+  /** Newest first. */
+  backports: {
+    sha: string;
+    /** The backport PR. */
+    number: number;
+    title: string;
+    mergedAt: string | null;
+    /** The `master` PRs it backports. */
+    backportOf: number[];
+    /** The published crates its prdoc bumps; empty if it changes none (no prdoc). Absent in older indexes. */
+    crates?: string[];
+  }[];
 }
 
 export interface Meta {

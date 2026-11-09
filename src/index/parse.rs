@@ -200,6 +200,52 @@ pub fn pr_mentions(title: &str) -> Vec<u64> {
         .collect()
 }
 
+/// A crate entry of a prdoc's `crates:` list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrdocCrate {
+    pub name: String,
+    /// `major`, `minor`, `patch` or `none`.
+    pub bump: Option<String>,
+}
+
+/// The `crates:` list of a prdoc. Prdocs are YAML, but only this subset is read: a top-level `crates:` key followed by
+/// `- name: <crate>` entries with a `bump:` (`crates:\n- name: frame-support\n  bump: minor`), keys in any order.
+pub fn prdoc_crates(prdoc: &str) -> Vec<PrdocCrate> {
+    let unquote = |v: &str| v.trim().trim_matches(['"', '\'']).to_string();
+    let mut crates: Vec<PrdocCrate> = vec![];
+    let mut in_crates = false;
+    for line in prdoc.lines() {
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        if !line.starts_with([' ', '\t', '-']) {
+            in_crates = line.trim_end() == "crates:";
+            continue;
+        }
+        if !in_crates {
+            continue;
+        }
+        let mut item = line.trim_start();
+        if let Some(rest) = item.strip_prefix('-') {
+            crates.push(PrdocCrate {
+                name: String::new(),
+                bump: None,
+            });
+            item = rest.trim_start();
+        }
+        let Some(entry) = crates.last_mut() else {
+            continue;
+        };
+        if let Some(name) = item.strip_prefix("name:") {
+            entry.name = unquote(name);
+        } else if let Some(bump) = item.strip_prefix("bump:") {
+            entry.bump = Some(unquote(bump));
+        }
+    }
+    crates.retain(|c| !c.name.is_empty());
+    crates
+}
+
 /// The month a line is named after (`stable2606` -> 2026 * 12 + 5), or `None` for stray tags whose `YYMM` is no
 /// month (`stable1985`) or is more than 6 months from the line's first release (`stable6210`, tagged in 2026).
 pub fn line_month(line: &str, first_release_date: &str) -> Option<u32> {
@@ -320,6 +366,28 @@ mod tests {
             parse_release_changelog_patch("-## [Unreleased]\n+## [Next]\n"),
             None
         );
+    }
+
+    #[test]
+    fn parses_prdoc_crates() {
+        let prdoc = "title: Add `is_sufficient`\ndoc:\n- audience: Runtime Dev\n  description: |-\n    Not a list:\n    - name: fake\ncrates:\n- name: frame-support\n  bump: minor\n- bump: 'none'\n  name: \"pallet-assets\"\n  validate: false\n";
+        let crate_ = |name: &str, bump: &str| PrdocCrate {
+            name: name.into(),
+            bump: Some(bump.into()),
+        };
+        assert_eq!(
+            prdoc_crates(prdoc),
+            vec![
+                crate_("frame-support", "minor"),
+                crate_("pallet-assets", "none")
+            ]
+        );
+        // Indented lists, and prdocs without crates.
+        assert_eq!(
+            prdoc_crates("crates:\n  - name: sp-io\n    bump: patch\n"),
+            vec![crate_("sp-io", "patch")]
+        );
+        assert!(prdoc_crates("title: CI\ncrates: []\n").is_empty());
     }
 
     #[test]

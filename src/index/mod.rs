@@ -25,11 +25,14 @@
 //! - `runtimes-releases.json`: fellowship runtimes releases (and `main`) with their spec versions.
 //! - `crate-paths.json`: crate directory in polkadot-sdk `master` -> crate name.
 //! - `live-specs.json`: runtime version currently live on each chain.
+//! - `missed-prs.json`: master PRs released on an older stable line that a newer stable line has in no release.
+//! - `unpublished-backports.json`: per line, the backports merged into its branch after its latest final release.
 //! - `meta.json`: generation time.
 
 mod github;
 mod missed;
 pub mod parse;
+mod unpublished;
 mod westend;
 
 use crate::versions::{get_parity_crate_owner_crates, get_version_mapping_at_ref, MappingSource};
@@ -281,7 +284,9 @@ pub async fn run(options: IndexOptions) -> Result<(), Error> {
 
     let crate_paths = crate_paths(&gh, &cache, &crates).await?;
     let pending = pending_releases(&gh, &cache).await?;
-    let mentioned = missed::mentioned_prs(&gh, &cache, &missed::mentioned_numbers(&lines)).await?;
+    let mut numbers = missed::mentioned_numbers(&lines);
+    numbers.extend(unpublished::unpublished_numbers(&lines));
+    let mentioned = missed::mentioned_prs(&gh, &cache, &numbers).await?;
     let missed = missed::missed_prs(&lines, &mentioned);
     let westend = if options.live {
         let subscan_key = std::env::var("SUBSCAN_API_KEY")
@@ -291,6 +296,8 @@ pub async fn run(options: IndexOptions) -> Result<(), Error> {
     } else {
         vec![]
     };
+    let mut unpublished = unpublished::unpublished_backports(&lines, &mentioned);
+    unpublished::add_crates(&gh, &cache, &mut unpublished, &crates).await?;
     let live = if options.live {
         live_specs(&gh, &runtimes).await
     } else {
@@ -307,6 +314,7 @@ pub async fn run(options: IndexOptions) -> Result<(), Error> {
         &pending,
         &missed,
         &westend,
+        &unpublished,
     )
 }
 
@@ -792,6 +800,7 @@ fn write_output(
     pending: &[PendingRelease],
     missed: &[missed::MissedPr],
     westend: &[westend::WestendRuntime],
+    unpublished: &[unpublished::UnpublishedLine],
 ) -> Result<(), Error> {
     let mut shards: BTreeMap<&str, CrateShard> = BTreeMap::new();
     let mut origin_ranks: HashMap<(&str, &str), (bool, bool, &str)> = HashMap::new();
@@ -888,6 +897,10 @@ fn write_output(
     write("pending-releases.json", serde_json::to_value(&pending_out)?)?;
     write("missed-prs.json", serde_json::to_value(missed)?)?;
     write("westend.json", serde_json::to_value(westend)?)?;
+    write(
+        "unpublished-backports.json",
+        serde_json::to_value(unpublished)?,
+    )?;
     write(
         "meta.json",
         serde_json::json!({
@@ -1060,6 +1073,7 @@ mod tests {
             &mappings,
             &runtimes,
             &BTreeMap::new(),
+            &[],
             &[],
             &[],
             &[],

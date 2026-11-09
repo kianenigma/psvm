@@ -36,6 +36,12 @@ check(Array.isArray(read('pending-releases.json')), 'pending-releases.json is no
 check(Array.isArray(read('missed-prs.json')), 'missed-prs.json is not a list');
 // Empty if every Westend RPC failed (or --no-live): the site then omits Westend rather than not deploying.
 check(Array.isArray(read('westend.json')), 'westend.json is not a list');
+const unpublished = read('unpublished-backports.json');
+check(Array.isArray(unpublished), 'unpublished-backports.json is not a list');
+check(
+  unpublished.some?.((l) => l.line.startsWith('stable')),
+  'unpublished-backports.json lists no stable line (latest release points not found in the branch histories?)',
+);
 
 // RPCs fail independently; an empty file means all of them did (or the index ran with --no-live).
 check(read('live-specs.json').length > 0, 'live-specs.json is empty');

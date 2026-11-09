@@ -1,4 +1,14 @@
-import { type CommitRange, commitRange, type OpenPr, openBackports, refOf, sdkReleases } from './backports';
+import {
+  type CommitRange,
+  commitRange,
+  type OpenPr,
+  openBackports,
+  refOf,
+  sdkReleases,
+  type UnpublishedBackport,
+  unpublishedBackports,
+  unpublishedInto,
+} from './backports';
 import { type Http, RUNTIMES_REPO, SDK_REPO } from './http';
 import type { LiveSpec, PendingRelease, RuntimesRelease, SdkLine, SdkRelease } from './types';
 
@@ -11,6 +21,8 @@ export interface RuntimesSdk {
   /** Non-rc releases of the same line after `release`. */
   newer: SdkRelease[];
   openBackports: OpenPr[];
+  /** Backports merged into the line after its latest final release that change a published crate. */
+  unpublished: UnpublishedBackport[];
 }
 
 export interface RuntimesReleaseRow {
@@ -44,15 +56,17 @@ export interface RuntimesOverview {
 
 /**
  * The state of the fellowship runtimes, independent of any PR: releases with the polkadot-sdk release each builds on,
- * the chains running them (as of the index build), and what `main` has that is not released yet. Two to four API calls:
- * open backports (search) and the commits since the latest release.
+ * the chains running them (as of the index build), and what `main` has that is not released yet. Three to six API
+ * calls: open and merged backports (search) and the commits since the latest release.
  */
 export async function runtimesOverview(http: Http): Promise<RuntimesOverview> {
-  const [runtimes, releases, live, open] = await Promise.all([
+  const releasesLoaded = sdkReleases(http);
+  const [runtimes, releases, live, open, unpublished] = await Promise.all([
     http.data<RuntimesRelease[]>('runtimes-releases.json'),
-    sdkReleases(http),
+    releasesLoaded,
     http.data<LiveSpec[]>('live-specs.json'),
     openBackports(http),
+    releasesLoaded.then((r) => unpublishedBackports(http, r)),
   ]);
   if (!runtimes || !releases) throw new Error('Index files missing: run `psvm index --out web/public/data` first.');
 
@@ -68,6 +82,7 @@ export async function runtimesOverview(http: Http): Promise<RuntimesOverview> {
         line: line.name,
         newer: line.releases.slice(index + 1).filter((r) => !r.rc),
         openBackports: open.filter((pr) => pr.base === line.name),
+        unpublished: unpublishedInto(unpublished, line.name),
       };
     }
     return null;
@@ -99,6 +114,8 @@ export interface SdkPoint {
   /** Non-rc releases of the line after this one. */
   newer: SdkRelease[];
   openBackports: OpenPr[];
+  /** Backports merged into the line after its latest final release that change a published crate. */
+  unpublished: UnpublishedBackport[];
 }
 
 export type PendingReleasePage =
@@ -118,14 +135,17 @@ export type PendingReleasePage =
 
 /**
  * A pending runtimes release (found by the indexer): the polkadot-sdk release it moves the runtimes to, compared with
- * the one the latest release uses. Three to five API calls: the PR state, open backports, and the commits between.
+ * the one the latest release uses. Four to seven API calls: the PR state, open and merged backports, and the commits
+ * between.
  */
 export async function pendingReleasePage(http: Http, number: number): Promise<PendingReleasePage> {
-  const [pending, runtimes, releases, open, livePr] = await Promise.all([
+  const releasesLoaded = sdkReleases(http);
+  const [pending, runtimes, releases, open, unpublished, livePr] = await Promise.all([
     http.data<PendingRelease[]>('pending-releases.json'),
     http.data<RuntimesRelease[]>('runtimes-releases.json'),
-    sdkReleases(http),
+    releasesLoaded,
     openBackports(http),
+    releasesLoaded.then((r) => unpublishedBackports(http, r)),
     http.api<{ state: string; merged_at: string | null }>(`/repos/${RUNTIMES_REPO}/pulls/${number}`),
   ]);
   if (!runtimes || !releases) throw new Error('Index files missing: run `psvm index --out web/public/data` first.');
@@ -142,6 +162,7 @@ export async function pendingReleasePage(http: Http, number: number): Promise<Pe
         lineData: line,
         newer: line.releases.slice(index + 1).filter((r) => !r.rc),
         openBackports: open.filter((o) => o.base === line.name),
+        unpublished: unpublishedInto(unpublished, line.name),
       };
     }
     return null;

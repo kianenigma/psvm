@@ -13,11 +13,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! "Missed PRs": master PRs released on an older stable line that a newer stable line does not have.
+//! "Missed PRs": master PRs released on an older stable line that a newer stable line has in no release.
 //!
-//! A newer line has a PR if it branched off `master` after the PR merged, or if a commit on its branch mentions the
-//! PR number (backports are titled `[stable2606] Backport #11910 (#13531)`). An older line has it released if a final
-//! release point of that line contains such a commit.
+//! A line has a PR released if a final release point of it contains a commit of its branch that mentions the PR number
+//! (backports are titled `[stable2606] Backport #11910 (#13531)`). A newer line also has it if it branched off
+//! `master` after the PR merged. A backport merged into a newer line but in none of its final releases leaves the line
+//! missing the PR: its crates on crates.io still lack it (see `unpublished-backports.json`).
 
 use super::{github::GitHub, parse, Cache, Error, SdkLine};
 use futures::{stream, StreamExt, TryStreamExt};
@@ -43,7 +44,7 @@ pub struct MissedPr<'a> {
     pub merged_at: &'a str,
     /// Older lines and the first release of each that has it.
     pub released: Vec<LineRelease<'a>>,
-    /// Newer lines that have it in no release, nor on their branch.
+    /// Newer lines that have it in no final release. Their branch may have a backport of it that is not released yet.
     pub missing: Vec<&'a str>,
 }
 
@@ -134,7 +135,7 @@ pub async fn mentioned_prs(
         prs.insert(n, pr);
     }
     log::info!(
-        "{} PRs mentioned on stable branches ({} looked up)",
+        "{} PRs mentioned on release branches ({} looked up)",
         prs.len(),
         unknown.len()
     );
@@ -178,10 +179,6 @@ pub fn missed_prs<'a>(
         .filter(|(_, pr)| pr.base == "master")
         .filter_map(|(&number, pr)| {
             let merged_at = pr.merged_at.as_deref()?;
-            let has = |i: usize| {
-                per_line[i].0.contains_key(&number)
-                    || stable[i].branch_off.as_deref() > Some(merged_at)
-            };
             // Final releases at the commit's position or newer (smaller, history is newest first) contain it; the
             // oldest of them is the one with the largest position.
             let released: Vec<(usize, LineRelease)> = (0..stable.len())
@@ -202,6 +199,10 @@ pub fn missed_prs<'a>(
                 })
                 .collect();
             let oldest = released.first()?.0;
+            let has = |i: usize| {
+                released.iter().any(|(r, _)| *r == i)
+                    || stable[i].branch_off.as_deref() > Some(merged_at)
+            };
             let missing: Vec<&str> = (oldest + 1..stable.len())
                 .filter(|&i| !has(i))
                 .map(|i| stable[i].name.as_str())
@@ -297,5 +298,38 @@ mod tests {
         assert_eq!(missed[0].number, 1);
         assert_eq!(missed[0].released[0].release, "stable2603-1");
         assert_eq!(missed[0].missing, vec!["stable2606"]);
+    }
+
+    #[test]
+    fn a_merged_but_unreleased_backport_still_misses() {
+        let older = line(
+            "stable2606",
+            "2026-06-01T00:00:00Z",
+            &[("stable2606-2", "r1")],
+            &[("r1", &[]), ("b", &[13059, 13072])],
+        );
+        // The backport `c` landed after stable2609-1, the line's latest final release.
+        let newer = line(
+            "stable2609",
+            "2026-09-01T00:00:00Z",
+            &[("stable2609-1", "r2")],
+            &[("c", &[13059, 13755]), ("r2", &[])],
+        );
+        let lines = vec![older, newer];
+        let prs = BTreeMap::from([(13059, pr("2026-09-02T18:22:25Z"))]);
+        let missed = missed_prs(&lines, &prs);
+        assert_eq!(missed.len(), 1);
+        assert_eq!(missed[0].missing, vec!["stable2609"]);
+
+        // Once a final release contains it, the line has it.
+        let mut lines = lines;
+        let next = SdkRelease {
+            id: "stable2609-2".into(),
+            sha: "r3".into(),
+            ..lines[1].releases[0].clone()
+        };
+        lines[1].history.insert(0, ("r3".into(), vec![]));
+        lines[1].releases.push(next);
+        assert!(missed_prs(&lines, &prs).is_empty());
     }
 }

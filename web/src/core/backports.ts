@@ -1,5 +1,6 @@
 import { Http, SDK_REPO } from './http';
-import type { MissedPr, SdkLine, SdkRelease, SdkReleases } from './types';
+import { parsePrdocCrates } from './prdoc';
+import type { Meta, MissedPr, SdkLine, SdkRelease, SdkReleases, UnpublishedLine } from './types';
 
 /** An open (unmerged) pull request into a release branch. */
 export interface OpenPr {
@@ -15,6 +16,38 @@ export interface OpenPr {
   backportOf: number | null;
 }
 
+/** A backport merged into its line's branch that no final (crates.io) release of the line contains yet. */
+export interface UnpublishedBackport {
+  /** The backport PR. */
+  number: number;
+  title: string;
+  url: string;
+  /** The line's branch. */
+  base: string;
+  mergedAt: string | null;
+  /** The `master` PRs it backports. */
+  backportOf: number[];
+  /**
+   * The published crates its prdoc bumps (other than `bump: none`); `null` if unknown. Empty means it changes no
+   * published crate, e.g. a CI change without a prdoc, so it needs no release: CI (`check-semver`) requires every crate
+   * a PR changes to be in its prdoc.
+   */
+  crates: string[] | null;
+  /** Merged after the index was built: found by a live search, not by the indexer. */
+  sinceIndex: boolean;
+}
+
+/** Whether a merged backport changes a published crate, so that it needs a release (unknown counts as yes). */
+export const publishesCrates = (backport: UnpublishedBackport) => backport.crates === null || backport.crates.length > 0;
+
+/** The unpublished backports into `line` that change a published crate. */
+export function unpublishedInto(unpublished: Unpublished, line: string): UnpublishedBackport[] {
+  return (unpublished.get(line) ?? []).filter(publishesCrates);
+}
+
+/** Line name -> the line's unpublished backports, newest first. Lines without any may be absent. */
+export type Unpublished = Map<string, UnpublishedBackport[]>;
+
 interface GhIssueOrPull {
   number: number;
   title: string;
@@ -23,6 +56,8 @@ interface GhIssueOrPull {
   draft?: boolean;
   user?: { login: string } | null;
   base?: { ref: string };
+  /** Set on search results that are pull requests. */
+  pull_request?: { merged_at: string | null };
 }
 
 /**
@@ -50,19 +85,101 @@ function toOpenPr(item: GhIssueOrPull): OpenPr {
   };
 }
 
-/** Every open backport PR of the repository, via one search call per 100 results. */
-export async function openBackports(http: Http): Promise<OpenPr[]> {
-  const query = `repo:${SDK_REPO} is:pr is:open Backport in:title`;
-  const prs: OpenPr[] = [];
+/** Up to 500 PRs with "Backport" in their title that match `qualifiers`, via one search call per 100 results. */
+async function searchBackports(http: Http, qualifiers: string): Promise<GhIssueOrPull[]> {
+  const query = `repo:${SDK_REPO} is:pr ${qualifiers} Backport in:title`;
+  const found: GhIssueOrPull[] = [];
   for (let page = 1; page <= 5; page++) {
     const result = await http.api<{ total_count: number; items: GhIssueOrPull[] }>(
       `/search/issues?q=${encodeURIComponent(query)}&per_page=100&page=${page}`,
     );
     const items = result?.items ?? [];
-    prs.push(...items.map(toOpenPr).filter((pr) => pr.backportOf !== null));
+    found.push(...items);
     if (items.length < 100) break;
   }
+  return found;
+}
+
+/** Every open backport PR of the repository. */
+export async function openBackports(http: Http): Promise<OpenPr[]> {
+  const prs = (await searchBackports(http, 'is:open')).map(toOpenPr).filter((pr) => pr.backportOf !== null);
   return prs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** Every backport PR merged on or after `since`, a `YYYY-MM-DD` date. */
+async function mergedBackportsSince(http: Http, since: string): Promise<UnpublishedBackport[]> {
+  return (await searchBackports(http, `is:merged merged:>=${since}`)).flatMap((item) => {
+    const { branch, of } = parseBackportTitle(item.title);
+    const mergedAt = item.pull_request?.merged_at;
+    if (of === null || !branch || !mergedAt) return [];
+    const backport = { number: item.number, title: item.title, url: item.html_url, base: branch, mergedAt, backportOf: [of] };
+    return [{ ...backport, crates: null, sinceIndex: true }];
+  });
+}
+
+/**
+ * The published crates the prdocs of `numbers` on `ref` bump (other than `bump: none`); `null` if a prdoc could not be
+ * read. Backports carry the prdoc of the PR they backport.
+ */
+async function prdocCratesAt(http: Http, ref: string, numbers: number[], published: Set<string>): Promise<string[] | null> {
+  try {
+    const prdocs = await Promise.all(numbers.map((n) => http.raw(SDK_REPO, ref, `prdoc/pr_${n}.prdoc`)));
+    const crates = prdocs.flatMap((prdoc) => (prdoc ? parsePrdocCrates(prdoc) : []));
+    return [...new Set(crates.filter((c) => c.bump !== 'none' && published.has(c.name)).map((c) => c.name))].sort();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The backports merged into each line's branch that no final release of the line contains yet: the indexer's list,
+ * plus those merged since the index was built and after their line's latest final release (one search call, and their
+ * prdocs from raw.githubusercontent.com). Includes backports that change no published crate; see `publishesCrates`.
+ */
+export async function unpublishedBackports(http: Http, releases: SdkReleases | null): Promise<Unpublished> {
+  const [indexed, meta, paths] = await Promise.all([
+    http.data<UnpublishedLine[]>('unpublished-backports.json'),
+    http.data<Meta>('meta.json'),
+    http.data<Record<string, string>>('crate-paths.json'),
+  ]);
+  // The index is stamped when its build ends, after it read the branches, so look back a day before that.
+  const recent = meta
+    ? await mergedBackportsSince(http, new Date((meta.generatedAt - 86_400) * 1000).toISOString().slice(0, 10))
+    : [];
+  const byLine: Unpublished = new Map(
+    (indexed ?? []).map(({ line, backports }) => [
+      line,
+      backports.map((b) => ({
+        ...b,
+        url: `https://github.com/${SDK_REPO}/pull/${b.number}`,
+        base: line,
+        crates: b.crates ?? null,
+        sinceIndex: false,
+      })),
+    ]),
+  );
+  const fresh = recent.filter((backport) => {
+    const line = releases?.lines.find((l) => l.name === backport.base);
+    const latest = line?.releases.filter((r) => !r.rc).at(-1);
+    // Merged before the latest final release, the backport is in it (or the index would list it).
+    const known = byLine.get(backport.base)?.some((b) => b.number === backport.number);
+    return line && !(latest && latest.date >= backport.mergedAt!) && !known;
+  });
+  // The index lists the crates of what it found; read the prdocs of the rest on their branch (not rate limited).
+  const published = new Set(Object.values(paths ?? {}));
+  await Promise.all(
+    fresh.map(async (backport) => {
+      if (paths) backport.crates = await prdocCratesAt(http, backport.base, backport.backportOf, published);
+    }),
+  );
+  for (const backport of fresh) byLine.set(backport.base, [...(byLine.get(backport.base) ?? []), backport]);
+  for (const list of byLine.values()) list.sort((a, b) => (b.mergedAt ?? '').localeCompare(a.mergedAt ?? ''));
+  return byLine;
+}
+
+/** The unpublished backport of `pr` into `line`, if any. */
+export function unpublishedOf(unpublished: Unpublished, line: string, pr: number): UnpublishedBackport | null {
+  return unpublished.get(line)?.find((b) => b.backportOf.includes(pr)) ?? null;
 }
 
 /** Every open PR into `branch` (backports and others), via the pulls API. */
@@ -240,6 +357,8 @@ export type ReleasePage =
       backports: OpenPr[];
       /** Open PRs into the branch that are not backports. */
       others: OpenPr[];
+      /** Backports merged into the branch after the line's latest final release that change a published crate. */
+      unpublished: UnpublishedBackport[];
     };
 
 /** One release point: what it added since the previous one, and the open PRs into its branch it does not contain. */
@@ -252,9 +371,10 @@ export async function releasePage(http: Http, id: string): Promise<ReleasePage> 
     const aliased = line.releases.map((r) => !!r.aliases?.includes(id)).lastIndexOf(true);
     const index = exact >= 0 ? exact : aliased;
     if (index < 0) continue;
-    const [open, changes] = await Promise.all([
+    const [open, changes, unpublished] = await Promise.all([
       line.hasBranch ? openPrsInto(http, line.name) : Promise.resolve([]),
       releaseChanges(http, line, index, previousLineOf(releases.lines, line)),
+      unpublishedBackports(http, releases),
     ]);
     return {
       status: 'found',
@@ -264,6 +384,7 @@ export async function releasePage(http: Http, id: string): Promise<ReleasePage> 
       changes,
       backports: open.filter((pr) => pr.backportOf !== null),
       others: open.filter((pr) => pr.backportOf === null),
+      unpublished: unpublishedInto(unpublished, line.name),
     };
   }
   return { status: 'not-found', id };
@@ -272,30 +393,65 @@ export async function releasePage(http: Http, id: string): Promise<ReleasePage> 
 export interface MissedRow {
   pr: MissedPr;
   released: SdkRelease[];
-  /** Each newer line that misses it, with the open backport into it, if any. */
-  missing: { line: string; latest: SdkRelease | null; backport: OpenPr | null }[];
+  /** Each newer line that misses it, with its backport into it: merged but not released yet, or still open. */
+  missing: { line: string; latest: SdkRelease | null; unpublished: UnpublishedBackport | null; open: OpenPr | null }[];
 }
 
 /**
- * The "missed PRs" found by the indexer, with each missing line's latest release and any open backport into it. One to
- * five API calls (the open backports search).
+ * The "missed PRs" found by the indexer, with each missing line's latest release and any unpublished or open backport
+ * into it. Two to ten API calls (the open and the merged backports searches).
  */
 export async function missedPrs(http: Http): Promise<MissedRow[]> {
-  const [missed, releases, open] = await Promise.all([
+  const releasesLoaded = sdkReleases(http);
+  const [missed, releases, open, unpublished] = await Promise.all([
     http.data<MissedPr[]>('missed-prs.json'),
-    sdkReleases(http),
+    releasesLoaded,
     openBackports(http),
+    releasesLoaded.then((r) => unpublishedBackports(http, r)),
   ]);
   if (!missed || !releases) throw new Error('Index files missing: run `psvm index --out web/public/data` first.');
   const byId = new Map(releases.lines.flatMap((l) => l.releases.map((r) => [r.id, r] as const)));
-  const latest = (line: string) => releases.lines.find((l) => l.name === line)?.releases.filter((r) => !r.rc).at(-1) ?? null;
   return missed.map((pr) => ({
     pr,
     released: pr.released.flatMap((r) => byId.get(r.release) ?? []),
     missing: pr.missing.map((line) => ({
       line,
-      latest: latest(line),
-      backport: open.find((o) => o.backportOf === pr.number && o.base === line) ?? null,
+      latest: latestFinal(releases, line),
+      unpublished: unpublishedOf(unpublished, line, pr.number),
+      open: open.find((o) => o.backportOf === pr.number && o.base === line) ?? null,
     })),
   }));
+}
+
+/** The latest final release of `line`. */
+function latestFinal(releases: SdkReleases, line: string): SdkRelease | null {
+  return releases.lines.find((l) => l.name === line)?.releases.filter((r) => !r.rc).at(-1) ?? null;
+}
+
+export interface UnpublishedOverviewLine {
+  line: SdkLine;
+  /** The latest final release, which the backports came after. */
+  latest: SdkRelease | null;
+  /** Those that change a published crate. */
+  backports: UnpublishedBackport[];
+  /** Those that change no published crate (no prdoc, e.g. CI changes), so need no release. */
+  silent: UnpublishedBackport[];
+}
+
+/** Every line with unpublished backports, newest line first. One API call (the merged backports search). */
+export async function unpublishedOverview(http: Http): Promise<UnpublishedOverviewLine[]> {
+  const releases = await sdkReleases(http);
+  if (!releases) throw new Error('Index files missing: run `psvm index --out web/public/data` first.');
+  const unpublished = await unpublishedBackports(http, releases);
+  return releases.lines
+    .filter((line) => unpublished.get(line.name)?.length)
+    .map((line) => {
+      const all = unpublished.get(line.name)!;
+      return {
+        line,
+        latest: latestFinal(releases, line.name),
+        backports: all.filter(publishesCrates),
+        silent: all.filter((b) => !publishesCrates(b)),
+      };
+    });
 }

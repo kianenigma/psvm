@@ -73,10 +73,15 @@ How it works:
 - In the browser, the app reads the PR, its prdoc and its backport PRs, then finds the first release of each line
   that contains the merge (or backport) commit. It uses a binary search with GitHub's compare API, which takes about
   5–30 API calls per lookup. Runtimes are matched by published crate version, never by comparing version numbers.
-- The PR page also lists the PR's open backports. `#/releases` shows every release line with the backports still
-  open into it, and `#/release/<tag>` shows the open backports a single release is missing. The runtimes table names
-  the polkadot-sdk release each runtimes release builds on, linked to that page, with a warning when its line has
-  open backports.
+- The PR page also lists the PR's open backports, and flags lines whose backport is merged but in no final release
+  yet, so not on crates.io. `#/releases` shows every release line with the backports still open into it, and
+  `#/release/<tag>` shows the open and unpublished backports a single release is missing. The runtimes table names
+  the polkadot-sdk release each runtimes release builds on, linked to that page, with its line's open and unpublished
+  backport counts.
+- `#/unpublished` lists the backports merged into each line after its latest final release whose prdoc bumps a
+  published crate (from the index, plus those merged since it was built). Backports without one, such as CI changes,
+  need no release: polkadot-sdk's `check-semver` CI requires every crate a PR changes to be in its prdoc. `#/missed`
+  lists master PRs an older stable line released but a newer one has in no release.
 
 Run it locally:
 

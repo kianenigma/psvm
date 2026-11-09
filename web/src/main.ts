@@ -10,10 +10,15 @@ import {
   isDatedStableLine,
   type MissedRow,
   missedPrs,
+  type UnpublishedBackport,
+  type UnpublishedOverviewLine,
+  unpublishedOverview,
 } from './core/backports';
 import { BadTokenError, Http, type KV, RateLimitError, RUNTIMES_REPO, SDK_REPO } from './core/http';
 import {
   type CrateLineVersion,
+  type LineResult,
+  lineState,
   type LockVerdict,
   lookupPr,
   parsePrInput,
@@ -37,6 +42,8 @@ type Merged = Extract<Report, { status: 'merged' }>;
 const TOKEN_KEY = 'psvm.token';
 /** Runtimes releases shown before "Show all". */
 const RUNTIMES_SHOWN = 8;
+/** Release lines shown on a PR page before "Show older lines"; older lines with a warning are always shown. */
+const LINES_SHOWN = 3;
 
 const app = document.getElementById('app')!;
 const footer = document.getElementById('footer')!;
@@ -192,38 +199,75 @@ function renderOpenPr(pr: OpenPr, { showTarget = false, showOriginal = false } =
   return `<li>${link(pr.url, `#${pr.number}`)}${draft} ${esc(pr.title)}<span class="sub">Open since ${date(pr.createdAt)}${author}${target}${original}</span></li>`;
 }
 
+/** A backport merged into its line after the line's latest final release. */
+function renderUnpublishedPr(pr: UnpublishedBackport, { showTarget = false } = {}): string {
+  const fresh = pr.sinceIndex ? ' <span class="badge" title="Merged after the index was built, found live">new</span>' : '';
+  const target = showTarget ? ` into <code>${esc(pr.base)}</code>` : '';
+  const original = pr.backportOf.map((n) => pageLink(`#/pr/${n}`, `#${n}`)).join(', ');
+  const merged = pr.mergedAt ? `Merged ${date(pr.mergedAt)}` : 'Merged';
+  const crates = pr.crates?.length
+    ? `<span class="sub">Bumps ${pr.crates.map((c) => link(crateUrl(c), `<code>${esc(c)}</code>`)).join(', ')}</span>`
+    : '';
+  return `<li>${link(pr.url, `#${pr.number}`)}${fresh} ${esc(pr.title)}<span class="sub">${merged}${target}, backports ${original}</span>${crates}</li>`;
+}
+
 function renderLines(report: Merged): string {
   const pending = (line: string) => report.openBackports.filter((pr) => pr.base === line);
+  const states = new Map(report.lines.map((l) => [l, lineState(l, report.fixes, report.openBackports)] as const));
+  const stateOf = (l: LineResult) => states.get(l)!;
   const anyHas = report.lines.some((l) => l.firstIndex !== null);
-  // Lines are newest first. A stable line without the change is a gap if an older stable line has it: upgrading from
-  // that line to this one loses the change (see the "Missed backports" page).
+  // Lines are newest first. A stable line with no release of the change is a gap if an older stable line released it:
+  // upgrading from that line's crates to this one's loses the change (see the "Missed backports" page).
   const stable = report.lines.filter((l) => isDatedStableLine(l.line));
-  const olderWithIt = (l: (typeof report.lines)[number]) =>
-    isDatedStableLine(l.line) ? stable.slice(stable.indexOf(l) + 1).filter((o) => o.firstIndex !== null) : [];
-  const shown = anyHas ? report.lines : report.lines.filter((l) => pending(l.line.name).length);
+  const olderWithIt = (l: LineResult) =>
+    isDatedStableLine(l.line) ? stable.slice(stable.indexOf(l) + 1).filter((o) => stateOf(o).kind === 'released') : [];
+  const names = (lines: LineResult[]) => lines.map((o) => `<code>${esc(o.line.name)}</code>`).join(', ');
+  const shown = anyHas ? report.lines : report.lines.filter((l) => stateOf(l).kind === 'unpublished' || stateOf(l).kind === 'open');
+  // A change to no published crate (CI, docs; no prdoc) needs no release: being merged is all it takes.
+  const publishes = report.crates.some((c) => c.shard && c.bump !== 'none');
+  const warns = (l: LineResult) => {
+    const { kind } = stateOf(l);
+    return (kind === 'unpublished' && publishes) || kind === 'open' || (kind === 'none' && olderWithIt(l).length > 0);
+  };
+  const hidden = (l: LineResult, i: number) => i >= LINES_SHOWN && !warns(l);
   const lineNames = new Set(report.lines.map((l) => l.line.name));
   const elsewhere = report.openBackports.filter((pr) => !pr.base || !lineNames.has(pr.base));
 
   const rows = shown
-    .map((l) => {
+    .map((l, i) => {
+      const state = stateOf(l);
+      const cls = `line${state.kind === 'released' ? '' : ' missing'}${hidden(l, i) ? ' hidden' : ''}`;
       const open = pending(l.line.name);
       const openNote = open.length
-        ? `<div class="pending"><strong>${open.length === 1 ? 'Backport pending' : `${open.length} backports pending`}</strong>: not merged into <code>${esc(l.line.name)}</code> yet, so no release of this line has ${l.firstIndex === null ? 'it' : 'it through them'}.<ul class="prs">${open.map((pr) => renderOpenPr(pr)).join('')}</ul></div>`
+        ? `<div class="pending"><strong>${open.length === 1 ? '⚠ Backport open' : `⚠ ${open.length} backports open`}</strong>: not merged into <code>${esc(l.line.name)}</code> yet, so no release of this line has ${state.kind === 'released' ? 'it through them' : 'it'}.<ul class="prs">${open.map((pr) => renderOpenPr(pr)).join('')}</ul></div>`
         : '';
-      if (l.firstIndex === null) {
+      if (state.kind !== 'released') {
         const older = olderWithIt(l);
-        const marker = open.length
-          ? ''
-          : older.length
-            ? `<div class="no-backport gap">✗ No backport, but ${older.map((o) => `<code>${esc(o.line.name)}</code>`).join(', ')} ${older.length === 1 ? 'has' : 'have'} it: upgrading from ${older.length === 1 ? 'it' : 'them'} to this line loses the change.</div>`
+        let marker = '';
+        if (state.kind === 'unpublished') {
+          const fix = state.backport;
+          const how = fix?.backport
+            ? `backport ${link(fix.backport.url, `#${fix.backport.number}`)} was merged into <code>${esc(l.line.name)}</code> on ${date(fix.mergedAt)}`
+            : `the <code>${esc(l.line.name)}</code> branch has it`;
+          const rc = state.rc ? ` and ${releaseLink(state.rc)} contains it` : '';
+          const loses = older.length
+            ? ` Until then, upgrading from ${names(older)} to this line's crates loses the change.`
+            : '';
+          marker = publishes
+            ? `<div class="pending"><strong>⚠ Merged, not published</strong>: ${how}${rc}, but no final release of this line has it yet, so neither do its crates on crates.io. It ships with the line's next release.${loses}</div>`
+            : `<p class="line-summary">✓ ${how.replace(/^\w/, (c) => c.toUpperCase())}${rc}. It changes no published crate, so it needs no release.</p>`;
+        } else if (state.kind === 'none') {
+          marker = older.length
+            ? `<div class="no-backport gap">✗ No backport, but ${names(older)} ${older.length === 1 ? 'has' : 'have'} it: upgrading from ${older.length === 1 ? 'it' : 'them'} to this line loses the change.</div>`
             : `<div class="no-backport">✗ No backport: branched off before the merge.</div>`;
-        return `<div class="line missing">
+        }
+        return `<div class="${cls}">
           <div class="line-name">${esc(l.line.name)}</div>
-          <div>${renderRail(l.line, { firstIndex: null })}${marker}${openNote}</div>
+          <div>${renderRail(l.line, { firstIndex: l.firstIndex })}${marker}${openNote}</div>
         </div>`;
       }
-      const first = l.line.releases[l.firstIndex];
-      const all = l.line.releases.slice(l.firstIndex);
+      const first = l.line.releases[l.firstIndex!];
+      const all = l.line.releases.slice(l.firstIndex!);
       const via = l.via?.backport
         ? `via backport ${link(l.via.backport.url, `#${l.via.backport.number}`)} (${link(`https://github.com/${SDK_REPO}/commit/${l.via.sha}`, `<code>${short(l.via.sha)}</code>`)})`
         : `via the original merge`;
@@ -233,7 +277,7 @@ function renderLines(report: Merged): string {
             `<li>${link(c.compareUrl, `<code>${short(c.fix.sha)}…${esc(c.release.kind === 'tag' ? c.release.name : short(c.release.sha))}</code>`)}: ${c.contained ? 'contained' : 'not contained'}</li>`,
         )
         .join('');
-      return `<div class="line">
+      return `<div class="${cls}">
         <div class="line-name">${esc(l.line.name)}</div>
         <div>
           ${renderRail(l.line, { firstIndex: l.firstIndex })}
@@ -249,6 +293,10 @@ function renderLines(report: Merged): string {
     })
     .join('');
 
+  const hiddenCount = shown.filter(hidden).length;
+  const more = hiddenCount
+    ? `<button type="button" class="secondary show-more" data-reveal="#pr-lines .line.hidden">Show ${hiddenCount} older line${hiddenCount === 1 ? '' : 's'}</button>`
+    : '';
   const empty = anyHas
     ? ''
     : `<p class="status">No indexed release contains this PR yet. It is merged into <code>${esc(report.pr.base)}</code> and will ship with the next release cut from it.</p>`;
@@ -258,9 +306,9 @@ function renderLines(report: Merged): string {
 
   return `<section>
     <h2>Releases</h2>
-    <p class="section-note">Each row is a release line. Its releases run left to right, oldest to newest; hover a release for its full name and date, or click it to see the release and the backports it is still missing. Once a release contains the change, every later release on that line does too.</p>
+    <p class="section-note">Each row is a release line. Its releases run left to right, oldest to newest; hover a release for its full name and date, or click it to see the release and the backports it is still missing. Once a release contains the change, every later release on that line does too. A backport that is merged but in no final release is not on crates.io yet.</p>
     ${shown.length ? RAIL_LEGEND : ''}
-    ${empty}<div class="lines">${rows}</div>${other}
+    ${empty}<div class="lines" id="pr-lines">${rows}</div>${more}${other}
   </section>`;
 }
 
@@ -330,16 +378,29 @@ function renderSpecs(release: { specs: RuntimesRelease['specs'] }): string {
   return `<code title="${esc(detail)}">${text}</code><span class="sub">${release.specs.length} runtimes</span>`;
 }
 
-/** The sdk release a runtimes release builds on, flagged by whether backports into its line are open. */
+/**
+ * Two flags for a line, each on its own line: its open backports, and its backports merged after its latest final
+ * release (not on crates.io yet).
+ */
+function backportFlags(line: string, open: number, unpublished: number, { into = false } = {}): string {
+  const plural = (n: number) => (n === 1 ? '' : 's');
+  const target = into ? ` into <code>${esc(line)}</code>` : '';
+  const openFlag = open
+    ? `<span class="flag warn" title="${open} open backport${plural(open)} into ${esc(line)}">⚠ ${open} open backport${plural(open)}${target}</span>`
+    : `<span class="flag ok" title="No open backports into ${esc(line)}">✓ no open backports${target}</span>`;
+  const unpublishedFlag = unpublished
+    ? `<span class="flag warn" title="${unpublished} backport${plural(unpublished)} merged into ${esc(line)} after its latest final release, so not on crates.io yet">⚠ ${unpublished} unpublished backport${plural(unpublished)}${target}</span>`
+    : `<span class="flag ok" title="Every backport merged into ${esc(line)} is in a final release">✓ no unpublished backports${target}</span>`;
+  return `<span class="sub">${openFlag}</span><span class="sub">${unpublishedFlag}</span>`;
+}
+
+/** The sdk release a runtimes release builds on, flagged by the open and unpublished backports of its line. */
 function renderSdkRelease(sdk: RuntimesRow['sdk'] | RuntimesSdk): string {
   if (!sdk) return '<span class="muted">unknown</span>';
-  const { release, line, matched, total, openBackports } = sdk;
-  const open = openBackports.length;
-  const flag = open
-    ? `<span class="flag warn" title="${open} open backport${open === 1 ? '' : 's'} into ${esc(line)}">⚠ ${open} open backport${open === 1 ? '' : 's'}</span>`
-    : `<span class="flag ok" title="No open backports into ${esc(line)}">✓ no open backports</span>`;
+  const { release, line, matched, total, openBackports, unpublished } = sdk;
   const label = release.kind === 'untagged' ? `${esc(release.name)} (untagged)` : esc(release.name.replace(/^polkadot-/, ''));
-  return `${pageLink(releaseHref(release), label)}<span class="sub" title="${matched} of ${total} locked polkadot-sdk crates match this release">${flag}</span>`;
+  const title = `${matched} of ${total} locked polkadot-sdk crates match this release`;
+  return `<a href="${esc(releaseHref(release))}" title="${esc(title)}">${label}</a>${backportFlags(line, openBackports.length, unpublished.length)}`;
 }
 
 function runtimesReleaseLink(r: RuntimesRelease): string {
@@ -380,7 +441,7 @@ function renderRuntimes(report: Merged): string {
     <h2>Fellowship runtimes</h2>
     <p class="section-note">The version of each crate locked in <code>polkadot-fellows/runtimes</code>, and whether that published version contains the change. Each cell links to its line in <code>Cargo.lock</code>. The polkadot-sdk column is the release whose crate versions match the most locked crates; click it to see the backports that release is still missing.</p>
     <div class="table-wrap"><table id="runtimes">${head}${rows}</table></div>
-    ${hiddenCount ? `<button type="button" class="secondary show-more" id="show-runtimes">Show ${hiddenCount} older releases</button>` : ''}
+    ${hiddenCount ? `<button type="button" class="secondary show-more" data-reveal="#runtimes tr.hidden">Show ${hiddenCount} older releases</button>` : ''}
   </section>`;
 }
 
@@ -449,7 +510,7 @@ function renderReleasePage(page: ReleasePage): string {
   if (page.status === 'not-found') {
     return `<p class="status error">No indexed release is called <code>${esc(page.id)}</code>. Pick one from ${pageLink('#/releases', 'the release lines')}.</p>`;
   }
-  const { release, line, newer, changes, backports, others } = page;
+  const { release, line, newer, changes, backports, others, unpublished } = page;
   const kind = release.kind === 'untagged' ? 'Crates published without a git tag' : release.rc ? 'Release candidate' : 'Final release';
   const position = newer.length
     ? `${newer.length} newer release${newer.length === 1 ? '' : 's'} on <code>${esc(line.name)}</code>, latest ${releaseLink(newer.at(-1)!)}`
@@ -458,6 +519,14 @@ function renderReleasePage(page: ReleasePage): string {
     ? `<p class="section-note">These backports are still open, so neither this release nor any other release of <code>${esc(line.name)}</code> contains them.${newer.length ? ' Backports merged after this release may be in the newer releases; trace their original PR to check.' : ''}</p>
        <ul class="prs">${backports.map((pr) => renderOpenPr(pr, { showOriginal: true })).join('')}</ul>`
     : `<p class="status">No open backports into <code>${esc(line.name)}</code>.</p>`;
+  const latest = line.releases.filter((r) => !r.rc).at(-1);
+  const unpublishedSection = unpublished.length
+    ? `<section>
+      <h2>${unpublished.length === 1 ? '1 unpublished backport' : `${unpublished.length} unpublished backports`}</h2>
+      <p class="section-note">Merged into <code>${esc(line.name)}</code> after ${latest ? `its latest final release ${releaseLink(latest)}` : 'its branch-off, with no final release yet'}, so no release of this line has them on crates.io yet.</p>
+      <ul class="prs">${unpublished.map((b) => renderUnpublishedPr(b)).join('')}</ul>
+    </section>`
+    : '';
   const otherPrs = others.length
     ? `<section><h2>Other open PRs into <code>${esc(line.name)}</code></h2><ul class="prs">${others.map((pr) => renderOpenPr(pr)).join('')}</ul></section>`
     : '';
@@ -482,7 +551,7 @@ function renderReleasePage(page: ReleasePage): string {
     <section>
       <h2>${backports.length === 1 ? '1 open backport' : `${backports.length} open backports`}</h2>
       ${missing}
-    </section>${otherPrs}`;
+    </section>${unpublishedSection}${otherPrs}`;
 }
 
 // --- Fellowship runtimes page ------------------------------------------------------------------
@@ -548,7 +617,7 @@ function renderRuntimesPage({ latest, rows, chains, unreleased }: RuntimesOvervi
       <h2>Releases</h2>
       <p class="section-note">The polkadot-sdk column is the release whose crate versions match the most crates locked in each release's <code>Cargo.lock</code>; click it to see the backports that release is missing.</p>
       <div class="table-wrap"><table id="runtimes"><tr><th>Release</th><th>Spec version</th><th>polkadot-sdk</th><th>Live on</th></tr>${releaseRows}</table></div>
-      ${hiddenCount ? `<button type="button" class="secondary show-more" id="show-runtimes">Show ${hiddenCount} older releases</button>` : ''}
+      ${hiddenCount ? `<button type="button" class="secondary show-more" data-reveal="#runtimes tr.hidden">Show ${hiddenCount} older releases</button>` : ''}
     </section>`;
 }
 
@@ -556,15 +625,12 @@ function renderRuntimesPage({ latest, rows, chains, unreleased }: RuntimesOvervi
 
 function renderSdkPoint(point: SdkPoint | null, match?: { matched: number; total: number }): string {
   if (!point) return '<span class="muted">unknown</span>';
-  const open = point.openBackports.length;
-  const flag = open
-    ? `<span class="flag warn">⚠ ${open} open backport${open === 1 ? '' : 's'} into <code>${esc(point.line)}</code></span>`
-    : `<span class="flag ok">✓ no open backports into <code>${esc(point.line)}</code></span>`;
+  const flags = backportFlags(point.line, point.openBackports.length, point.unpublished.length, { into: true });
   const newer = point.newer.length
     ? `${point.newer.length} newer on <code>${esc(point.line)}</code>, latest ${releaseLink(point.newer.at(-1)!)}`
     : `latest of <code>${esc(point.line)}</code>`;
   const matched = match ? `, ${match.matched} of ${match.total} crates match` : '';
-  return `${releaseLink(point.release)}<span class="sub">${flag}</span><span class="sub">${newer}${matched}</span>`;
+  return `${releaseLink(point.release)}${flags}<span class="sub">${newer}${matched}</span>`;
 }
 
 function renderPendingPage(page: PendingReleasePage): string {
@@ -592,6 +658,9 @@ function renderPendingPage(page: PendingReleasePage): string {
   const backports = after?.openBackports.length
     ? `<section><h2>Open backports into <code>${esc(after.line)}</code></h2><p class="section-note">Not in ${releaseLink(after.release)} nor any release of its line yet.</p><ul class="prs">${after.openBackports.map((o) => renderOpenPr(o, { showOriginal: true })).join('')}</ul></section>`
     : '';
+  const unpublished = after?.unpublished.length
+    ? `<section><h2>Unpublished backports into <code>${esc(after.line)}</code></h2><p class="section-note">Merged after the latest final release of <code>${esc(after.line)}</code>, so not on crates.io yet.</p><ul class="prs">${after.unpublished.map((b) => renderUnpublishedPr(b)).join('')}</ul></section>`
+    : '';
   const rail = after ? `${RC_TOGGLE}${renderRail(after.lineData, { current: after.release.id })}` : '';
   return `<div class="pr-head">
       <h2>${link(pr.url, esc(pr.title))}</h2>
@@ -615,25 +684,28 @@ function renderPendingPage(page: PendingReleasePage): string {
       ${rail}
     </section>
     <section>${changes}</section>
-    ${backports}`;
+    ${backports}${unpublished}`;
 }
 
 // --- Missed backports --------------------------------------------------------------------------
 
 function renderMissedPage(rows: MissedRow[]): string {
   if (!rows.length) {
-    return `<div class="pr-head"><h2>Missed backports</h2></div><p class="status">No PR released on an older stable line is missing from a newer one.</p>`;
+    return `<div class="pr-head"><h2>Missed backports</h2></div><p class="status">No PR released on an older stable line is missing from the releases of a newer one.</p>`;
   }
   const gaps = rows.reduce((n, r) => n + r.missing.length, 0);
-  const open = rows.reduce((n, r) => n + r.missing.filter((m) => m.backport).length, 0);
+  const unpublished = rows.reduce((n, r) => n + r.missing.filter((m) => m.unpublished).length, 0);
+  const open = rows.reduce((n, r) => n + r.missing.filter((m) => m.open && !m.unpublished).length, 0);
   const body = rows
     .map(({ pr, released, missing }) => {
       const prLink = link(`https://github.com/${SDK_REPO}/pull/${pr.number}`, `#${pr.number}`);
       const missingCells = missing
         .map((m) => {
-          const status = m.backport
-            ? `<span class="flag warn">⚠ backport ${link(m.backport.url, `#${m.backport.number}`)} open</span>`
-            : `<span class="flag no">✗ no backport</span>`;
+          const status = m.unpublished
+            ? `<span class="flag warn">⚠ backport ${link(m.unpublished.url, `#${m.unpublished.number}`)} merged, not published</span>`
+            : m.open
+              ? `<span class="flag warn">⚠ backport ${link(m.open.url, `#${m.open.number}`)} open</span>`
+              : `<span class="flag no">✗ no backport</span>`;
           const latest = m.latest ? `not in ${releaseLink(m.latest)}` : '';
           return `<div class="missing-line"><code>${esc(m.line)}</code> ${status}<span class="sub">${latest}</span></div>`;
         })
@@ -647,10 +719,10 @@ function renderMissedPage(rows: MissedRow[]): string {
     .join('');
   return `<div class="pr-head">
       <h2>Missed backports</h2>
-      <div class="facts"><span>${rows.length} PRs</span><span>${gaps} missing lines</span><span>${open} with an open backport</span></div>
+      <div class="facts"><span>${rows.length} PRs</span><span>${gaps} missing lines</span><span>${unpublished} merged, not published</span><span>${open} with an open backport</span></div>
     </div>
     <section>
-      <p class="section-note">Master PRs that a release of an older stable line ships, but a newer stable line does not: it branched off before the PR merged and no backport landed on it. Upgrading from the older line to the newer one loses the change. Some may be deliberate, for example when the newer line no longer has the code the PR fixes.</p>
+      <p class="section-note">Master PRs that a release of an older stable line ships, but no release of a newer stable line does: it branched off before the PR merged, and no backport of it is released. Upgrading from the older line's crates to the newer line's loses the change. A backport that is merged but not published keeps its line here until a release ships it. Some gaps may be deliberate, for example when the newer line no longer has the code the PR fixes.</p>
       <div class="table-wrap"><table><tr><th>PR</th><th>Released in</th><th>Missing from</th></tr>${body}</table></div>
     </section>`;
 }
@@ -730,6 +802,41 @@ function renderWestendPage({ runtimes, commits }: { runtimes: WestendRuntime[]; 
     </section>${sections}`;
 }
 
+// --- Unpublished backports ---------------------------------------------------------------------
+
+function renderUnpublishedPage(lines: UnpublishedOverviewLine[]): string {
+  const total = lines.reduce((n, l) => n + l.backports.length, 0);
+  const silent = lines.reduce((n, l) => n + l.silent.length, 0);
+  if (!total && !silent) {
+    return `<div class="pr-head"><h2>Unpublished backports</h2></div><p class="status">Every backport merged into a release line is in a final release of it.</p>`;
+  }
+  const body = lines
+    .map(({ line, latest, backports, silent }) => {
+      const list = backports.length
+        ? `<ul class="prs">${backports.map((b) => renderUnpublishedPr(b)).join('')}</ul>`
+        : `<p class="line-summary muted">None changes a published crate.</p>`;
+      const quiet = silent.length
+        ? `<details><summary>${silent.length === 1 ? '1 backport changes' : `${silent.length} backports change`} no published crate</summary><ul class="prs">${silent.map((b) => renderUnpublishedPr(b)).join('')}</ul></details>`
+        : '';
+      return `<div class="line">
+        <div class="line-head"><span class="line-name">${esc(line.name)}</span>${backports.length ? `<span class="badge">${backports.length} unpublished</span>` : ''}</div>
+        <div>
+          <p class="line-summary">${latest ? `Merged after ${releaseLink(latest)} <span class="muted">${date(latest.date)}</span>, the latest final release.` : 'No final release yet.'}</p>
+          ${list}${quiet}
+        </div>
+      </div>`;
+    })
+    .join('');
+  return `<div class="pr-head">
+      <h2>Unpublished backports</h2>
+      <div class="facts"><span>${total} backport${total === 1 ? '' : 's'}</span><span>${lines.filter((l) => l.backports.length).length} lines</span>${silent ? `<span>${silent} more change no published crate</span>` : ''}</div>
+    </div>
+    <section>
+      <p class="section-note">Backports merged into a release line's branch after its latest final release that bump a published crate in their prdoc. They ship with the line's next release; until then, no crates.io version of the line has them. Backports without such a prdoc (CI, docs, tests) need no release and are folded away: CI requires every crate a PR changes to be in its prdoc. Those marked <span class="badge">new</span> were merged after the index was built and found live.</p>
+      <div class="lines">${body}</div>
+    </section>`;
+}
+
 // --- Page --------------------------------------------------------------------------------------
 
 function renderReport(report: Report): string {
@@ -769,10 +876,12 @@ async function show<T>(loading: string, load: (http: Http, progress: (m: string)
     if (id !== current) return;
     app.innerHTML = render(data);
     document.title = title;
-    document.getElementById('show-runtimes')?.addEventListener('click', (e) => {
-      document.querySelectorAll('#runtimes tr.hidden').forEach((tr) => tr.classList.remove('hidden'));
-      (e.target as HTMLElement).remove();
-    });
+    app.querySelectorAll<HTMLButtonElement>('button[data-reveal]').forEach((button) =>
+      button.addEventListener('click', () => {
+        app.querySelectorAll(button.dataset.reveal!).forEach((el) => el.classList.remove('hidden'));
+        button.remove();
+      }),
+    );
     const remaining = http.rateRemaining === null ? '' : `, ${http.rateRemaining} left this hour`;
     footer.dataset.calls = `${http.apiCalls} GitHub API calls${remaining}`;
     renderFooter();
@@ -800,7 +909,7 @@ function renderFooter() {
 }
 
 /** Pages other than the PR trace; the PR field and the "Trace a PR" highlight belong to the trace pages only. */
-const OTHER_PAGES = /^#\/(release|runtimes|pending|missed|westend)/;
+const OTHER_PAGES = /^#\/(release|runtimes|pending|missed|westend|unpublished)/;
 
 function markNav(hash: string) {
   document.querySelectorAll<HTMLAnchorElement>('.nav a').forEach((a) => {
@@ -824,6 +933,8 @@ function route() {
     void show('Loading Westend…', (http) => westendOverview(http), renderWestendPage, 'Westend · Where is my PR?');
   else if (hash === '#/missed')
     void show('Loading missed backports…', (http) => missedPrs(http), renderMissedPage, 'Missed backports · Where is my PR?');
+  else if (hash === '#/unpublished')
+    void show('Loading unpublished backports…', (http) => unpublishedOverview(http), renderUnpublishedPage, 'Unpublished backports · Where is my PR?');
   else if (pending) {
     const number = Number(pending[1]);
     void show(`Loading pending release #${number}…`, (http) => pendingReleasePage(http, number), renderPendingPage, `Pending release #${number} · Where is my PR?`);

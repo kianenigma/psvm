@@ -620,7 +620,8 @@ td .sub,
   background: var(--paper);
 }
 
-tr.hidden {
+tr.hidden,
+.line.hidden {
   display: none;
 }
 

@@ -75,6 +75,8 @@ const AUTHORIZED_UPGRADE: &str =
 /// until the relay chain lets it take effect.
 const PENDING_VALIDATION_CODE: &str =
     "0x45323df7cc47150b3930e2666b0aa31390d171f8401887cf06fb43a732994c32";
+/// How many of the latest upgrades `westend-upgrades.json` lists.
+const UPGRADE_HISTORY: usize = 30;
 /// How far back (in blocks) to look for the upgrade and its authorization.
 const UPGRADE_WINDOW: u64 = 2_000_000;
 const AUTHORIZE_WINDOW: u64 = 200_000;
@@ -99,6 +101,29 @@ pub struct WestendRuntime {
     pub commit: Option<String>,
     /// The relay chain extrinsic (`block-index`) carrying the remark.
     pub extrinsic: Option<String>,
+}
+
+/// An upgrade the Westend sudo key authorized, as written to `westend-upgrades.json`. Only known from Subscan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WestendUpgrade {
+    pub chain: String,
+    /// The relay chain extrinsic (`block-index`) that authorized it.
+    pub extrinsic: String,
+    /// Time of that extrinsic (RFC 3339).
+    pub time: Option<String>,
+    #[serde(rename = "codeHash")]
+    pub code_hash: Option<String>,
+    /// The polkadot-sdk commit remarked with it (a full sha when GitHub knows it), and its title.
+    pub commit: Option<String>,
+    pub title: Option<String>,
+}
+
+/// What the indexer learns about Westend.
+#[derive(Debug, Default)]
+pub struct Westend {
+    pub runtimes: Vec<WestendRuntime>,
+    /// The latest upgrades, newest first; empty without a Subscan API key.
+    pub upgrades: Vec<WestendUpgrade>,
 }
 
 #[derive(Clone, Copy)]
@@ -489,6 +514,59 @@ async fn subscan_batches(
     Ok(batches)
 }
 
+/// The name of the chain with para id `para` (`None`: the relay chain).
+fn chain_name(para: Option<u64>) -> String {
+    CHAINS.iter().find(|(_, _, p)| *p == para).map_or_else(
+        || format!("Westend parachain {}", para.unwrap_or_default()),
+        |(name, _, _)| name.to_string(),
+    )
+}
+
+/// The first line of a polkadot-sdk commit's message; cached by sha (`None` if GitHub does not know the commit).
+async fn commit_title(gh: &GitHub, cache: &Cache, sha: &str) -> Result<Option<String>, Error> {
+    if let Some(title) = cache.get::<Option<String>>("commit-title", sha) {
+        return Ok(title);
+    }
+    let title = gh
+        .rest(&format!("/repos/{}/commits/{}", SDK_REPO, sha))
+        .await?
+        .and_then(|c| {
+            c["commit"]["message"]
+                .as_str()
+                .and_then(|m| m.lines().next())
+                .map(String::from)
+        });
+    cache.put("commit-title", sha, &title)?;
+    Ok(title)
+}
+
+/// The latest `UPGRADE_HISTORY` upgrades among `batches` (newest first): those that authorize code.
+async fn upgrades(gh: &GitHub, cache: &Cache, batches: &[UpgradeBatch]) -> Vec<WestendUpgrade> {
+    let mut out = vec![];
+    for batch in batches
+        .iter()
+        .filter(|b| b.code_hash.is_some())
+        .take(UPGRADE_HISTORY)
+    {
+        let title = match &batch.commit {
+            Some(sha) => commit_title(gh, cache, sha).await.unwrap_or_else(|e| {
+                log::warn!("title of Westend commit {}: {:?}", sha, e);
+                None
+            }),
+            None => None,
+        };
+        out.push(WestendUpgrade {
+            chain: chain_name(batch.para),
+            extrinsic: batch.extrinsic.clone(),
+            time: chrono_like(batch.time * 1000),
+            code_hash: batch.code_hash.clone(),
+            commit: batch.commit.clone(),
+            title,
+        });
+    }
+    out
+}
+
 /// A chain's runtime from the batch that authorized its live code, if any.
 async fn runtime_from_batch(
     gh: &GitHub,
@@ -525,8 +603,8 @@ async fn runtime_from_batch(
 
 /// The runtime of every Westend chain; chains whose RPC fails are logged and left out. With a Subscan API key, a
 /// chain whose live code was authorized by a remarked batch is read from that batch; the others (and all chains
-/// without a key) are found by searching the chain over RPC.
-pub async fn westend(gh: &GitHub, cache: &Cache, subscan_key: Option<&str>) -> Vec<WestendRuntime> {
+/// without a key) are found by searching the chain over RPC. The upgrade history needs the key.
+pub async fn westend(gh: &GitHub, cache: &Cache, subscan_key: Option<&str>) -> Westend {
     let batches = match subscan_key {
         Some(key) => subscan_batches(gh, cache, key).await.unwrap_or_else(|e| {
             log::warn!("Subscan unavailable, searching Westend over RPC: {:?}", e);
@@ -553,7 +631,10 @@ pub async fn westend(gh: &GitHub, cache: &Cache, subscan_key: Option<&str>) -> V
             Err(e) => log::warn!("{}: Westend runtime unavailable: {:?}", chain, e),
         }
     }
-    out
+    Westend {
+        runtimes: out,
+        upgrades: upgrades(gh, cache, &batches).await,
+    }
 }
 
 #[cfg(test)]
@@ -590,6 +671,13 @@ mod tests {
             batch.code_hash.as_deref(),
             Some("0xc7a91f4aafad7a00424bf9d5c8029f2fac2b6ea87ee7ece41fcd3825a5aa8bfd")
         );
+    }
+
+    #[test]
+    fn names_chains_by_para_id() {
+        assert_eq!(chain_name(None), "Westend");
+        assert_eq!(chain_name(Some(1000)), "Westend Asset Hub");
+        assert_eq!(chain_name(Some(2000)), "Westend parachain 2000");
     }
 
     #[test]

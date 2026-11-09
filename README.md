@@ -83,7 +83,8 @@ Run it locally:
 ```sh
 # Build the index (needs a GitHub token for the GraphQL API; the cache makes reruns fast)
 GITHUB_TOKEN=$(gh auth token) cargo run -- index --out web/public/data --cache-dir target/psvm-index-cache
-# Optional: SUBSCAN_API_KEY=<key> finds Westend upgrades from Subscan instead of searching the chain over RPC
+# Optional: SUBSCAN_API_KEY=<key> finds Westend upgrades from Subscan instead of searching the chain over RPC, and
+# lists the latest 30 on the Westend page (without a key there is no upgrade history)
 # Serve the app on http://localhost:5173/#/pr/12408
 cd web && npm install && npm run dev
 # Sanity-check the index output (also run before every deploy), and unit-test the parsing helpers

@@ -289,7 +289,7 @@ pub async fn run(options: IndexOptions) -> Result<(), Error> {
             .filter(|k| !k.is_empty());
         westend::westend(&gh, &cache, subscan_key.as_deref()).await
     } else {
-        vec![]
+        westend::Westend::default()
     };
     let live = if options.live {
         live_specs(&gh, &runtimes).await
@@ -791,7 +791,7 @@ fn write_output(
     live: &[LiveSpec],
     pending: &[PendingRelease],
     missed: &[missed::MissedPr],
-    westend: &[westend::WestendRuntime],
+    westend: &westend::Westend,
 ) -> Result<(), Error> {
     let mut shards: BTreeMap<&str, CrateShard> = BTreeMap::new();
     let mut origin_ranks: HashMap<(&str, &str), (bool, bool, &str)> = HashMap::new();
@@ -887,7 +887,11 @@ fn write_output(
     write("live-specs.json", serde_json::to_value(live)?)?;
     write("pending-releases.json", serde_json::to_value(&pending_out)?)?;
     write("missed-prs.json", serde_json::to_value(missed)?)?;
-    write("westend.json", serde_json::to_value(westend)?)?;
+    write("westend.json", serde_json::to_value(&westend.runtimes)?)?;
+    write(
+        "westend-upgrades.json",
+        serde_json::to_value(&westend.upgrades)?,
+    )?;
     write(
         "meta.json",
         serde_json::json!({
@@ -1063,7 +1067,7 @@ mod tests {
             &[],
             &[],
             &[],
-            &[],
+            &westend::Westend::default(),
         )
         .unwrap();
 

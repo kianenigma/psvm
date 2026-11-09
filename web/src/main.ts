@@ -29,8 +29,17 @@ import {
   runtimesOverview,
   type SdkPoint,
 } from './core/runtimes';
-import type { LiveSpec, Meta, PendingRelease, RuntimesRelease, SdkLine, SdkRelease, WestendRuntime } from './core/types';
-import { type WestendCommit, westendOverview } from './core/westend';
+import type {
+  LiveSpec,
+  Meta,
+  PendingRelease,
+  RuntimesRelease,
+  SdkLine,
+  SdkRelease,
+  WestendRuntime,
+  WestendUpgrade,
+} from './core/types';
+import { type WestendOverview, westendOverview } from './core/westend';
 
 type Merged = Extract<Report, { status: 'merged' }>;
 
@@ -701,7 +710,33 @@ function renderWestendForPr(report: Merged): string {
   </section>`;
 }
 
-function renderWestendPage({ runtimes, commits }: { runtimes: WestendRuntime[]; commits: WestendCommit[] }): string {
+/** The latest upgrades, marking the one each chain runs now (same authorizing extrinsic). */
+function renderWestendUpgrades(upgrades: WestendUpgrade[], runtimes: WestendRuntime[]): string {
+  if (!upgrades.length) {
+    return `<section><h2>Recent upgrades</h2><p class="status">The index has no upgrade history: the indexer reads it from Subscan, so it needs a <code>SUBSCAN_API_KEY</code>.</p></section>`;
+  }
+  const live = new Map(runtimes.filter((r) => r.extrinsic).map((r) => [`${r.chain} ${r.extrinsic}`, r]));
+  const rows = upgrades
+    .map((u) => {
+      const now = live.get(`${u.chain} ${u.extrinsic}`);
+      // Squash-merge titles end in `(#N)`: link the PR to its trace instead.
+      const pr = u.title?.match(/\s*\(#(\d+)\)\s*$/);
+      const title = u.title ? `${esc(pr ? u.title.slice(0, pr.index) : u.title)}${pr ? ` ${pageLink(`#/pr/${pr[1]}`, `#${pr[1]}`)}` : ''}` : '';
+      const commit = u.commit
+        ? `${link(`https://github.com/${SDK_REPO}/commit/${u.commit}`, `<code>${short(u.commit)}</code>`)} ${title}`
+        : '<span class="muted">no commit remarked</span>';
+      const state = now ? `<span class="flag ok">✓ live</span><span class="sub">spec <code>${specVersion(now.specVersion)}</code></span>` : '';
+      return `<tr><td>${u.time ? date(u.time) : ''}<span class="sub">${link(subscan('Westend', `extrinsic/${u.extrinsic}`), u.extrinsic)}</span></td><td>${esc(u.chain)}</td><td class="wrap">${commit}</td><td>${state}</td></tr>`;
+    })
+    .join('');
+  return `<section>
+      <h2>Recent upgrades</h2>
+      <p class="section-note">The last ${upgrades.length} runtime upgrades Westend's sudo key authorized on the relay chain, newest first, with the polkadot-sdk commit remarked with each (read from Subscan). An upgrade takes effect on its chain shortly after it is authorized; ✓ marks the one each chain runs now.</p>
+      <div class="table-wrap"><table><tr><th>Authorized</th><th>Chain</th><th>polkadot-sdk commit</th><th>Now</th></tr>${rows}</table></div>
+    </section>`;
+}
+
+function renderWestendPage({ runtimes, commits, upgrades }: WestendOverview): string {
   if (!runtimes.length) return `<p class="status">No Westend data in the index (it was built with <code>--no-live</code>, or every RPC failed).</p>`;
   const rows = runtimes
     .map((r) => `<tr><td>${esc(r.chain)}<span class="sub"><code>${esc(r.specName)}</code></span></td><td><code>${specVersion(r.specVersion)}</code></td><td>${renderWestendSince(r)}</td><td>${renderWestendCommit(r)}</td></tr>`)
@@ -727,7 +762,7 @@ function renderWestendPage({ runtimes, commits }: { runtimes: WestendRuntime[]; 
     <section>
       <p class="section-note">Westend is upgraded by <code>paritytech/substrate-runtime-upgrade</code>, which batches <code>system.remark_with_event(&lt;polkadot-sdk commit&gt;)</code> with the sudo upgrade on the relay chain. The indexer finds each chain's last upgrade and reads that remark. Upgrades made without it, like a plain <code>sudo(system.set_code)</code>, record no commit.</p>
       <div class="table-wrap"><table><tr><th>Chain</th><th>Spec version</th><th>Live since</th><th>Built from</th></tr>${rows}</table></div>
-    </section>${sections}`;
+    </section>${renderWestendUpgrades(upgrades, runtimes)}${sections}`;
 }
 
 // --- Page --------------------------------------------------------------------------------------

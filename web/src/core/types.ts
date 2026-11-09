@@ -103,6 +103,18 @@ export interface WestendRuntime {
   extrinsic?: string | null;
 }
 
+/** An upgrade the Westend sudo key authorized on the relay chain, from `westend-upgrades.json` (newest first). */
+export interface WestendUpgrade {
+  chain: string;
+  /** The relay chain extrinsic (`block-index`) that authorized it. */
+  extrinsic: string;
+  time: string | null;
+  codeHash: string | null;
+  /** The polkadot-sdk commit remarked with it, and its title. */
+  commit: string | null;
+  title: string | null;
+}
+
 export interface Meta {
   generatedAt: number;
   psvmVersion: string;

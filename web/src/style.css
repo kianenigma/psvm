@@ -155,9 +155,47 @@ button.secondary {
 
 .tools {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-left: auto;
+}
+
+/* Age of the index: a pill like the theme switch, its dot green while fresh and amber once a build is overdue. */
+.index-age {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.index-age[hidden] {
+  display: none;
+}
+
+.index-age::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--yes);
+}
+
+.index-age.stale {
+  border-color: var(--unknown);
+  color: var(--unknown);
+}
+
+.index-age.stale::before {
+  background: var(--unknown);
 }
 
 /* GitHub token: a pill like the theme switch that opens a dropdown. */

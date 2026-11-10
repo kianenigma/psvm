@@ -953,6 +953,37 @@ function run(number: number) {
 }
 
 let meta: Meta | null = null;
+
+/** The index is rebuilt every 4 hours (`.github/workflows/pages.yml`); older than this, a build failed or lagged. */
+const INDEX_STALE_AFTER = 8 * 3600;
+const indexAge = document.getElementById('index-age')!;
+
+/** `just now`, `5 min ago`, `3 h ago`, `2 days ago`. */
+function ago(seconds: number): string {
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
+  if (seconds < 2 * 86_400) return `${Math.floor(seconds / 3600)} h ago`;
+  return `${Math.floor(seconds / 86_400)} days ago`;
+}
+
+/** The index's age in the header, with the build time on hover; amber once it is overdue. */
+function renderIndexAge() {
+  indexAge.hidden = false;
+  if (!meta) {
+    indexAge.textContent = 'Index missing';
+    indexAge.title = 'No index found: run `psvm index --out web/public/data`.';
+    indexAge.classList.add('stale');
+    return;
+  }
+  const age = Math.max(0, Date.now() / 1000 - meta.generatedAt);
+  const stale = age > INDEX_STALE_AFTER;
+  indexAge.textContent = `Indexed ${ago(age)}`;
+  indexAge.title =
+    `Index built ${new Date(meta.generatedAt * 1000).toLocaleString()} by psvm ${meta.psvmVersion}. ` +
+    `It is rebuilt every 4 hours and on every push${stale ? '; this one is older, so a build may have failed' : ''}.`;
+  indexAge.classList.toggle('stale', stale);
+}
+
 function renderFooter() {
   const indexed = meta ? `Index built ${new Date(meta.generatedAt * 1000).toLocaleString()} by psvm ${esc(meta.psvmVersion)}.` : 'Index not found.';
   const calls = footer.dataset.calls ? ` This page used ${esc(footer.dataset.calls)}.` : '';
@@ -1067,8 +1098,13 @@ fetch('data/meta.json')
   .then((m: Meta | null) => {
     meta = m;
     renderFooter();
+    renderIndexAge();
+    window.setInterval(renderIndexAge, 60_000);
   })
-  .catch(() => renderFooter());
+  .catch(() => {
+    renderFooter();
+    renderIndexAge();
+  });
 
 // A runtimes PR that releases on merge gets a link in the header (found by the indexer, see `pending-releases.json`).
 fetch('data/pending-releases.json')
